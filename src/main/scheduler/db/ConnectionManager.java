@@ -6,6 +6,50 @@ import java.sql.SQLException;
 
 public class ConnectionManager {
 
+    private final String driverName = "org.postgresql.Driver";
+    private final String endpoint = System.getenv("Endpoint");
+    private final String database = System.getenv("Database");
+    private final String user = System.getenv("Username");
+    private final String password = System.getenv("Password");
+    private final String connectionURL = "jdbc:postgresql://" + endpoint + ":5432/" + database;
+
+    private Connection con = null;
+
+    public ConnectionManager() {
+        try {
+            Class.forName(driverName);
+        } catch (ClassNotFoundException e) {
+            System.out.println(e.toString());
+        }
+    }
+
+    public Connection createConnection() {
+        try {
+            con = DriverManager.getConnection(connectionURL, user, password);
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return con;
+    }
+
+    public void closeConnection() {
+        try {
+            this.con.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+}
+
+/*
+package scheduler.db;
+
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.SQLException;
+
+public class ConnectionManager {
+
     private final String driverName = "org.sqlite.JDBC";
     private final String connectionUrl = "jdbc:sqlite:" + System.getenv("DBPath");
 
@@ -36,3 +80,4 @@ public class ConnectionManager {
         }
     }
 }
+*/
