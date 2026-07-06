@@ -413,10 +413,9 @@ public class Scheduler {
                     removeStatement.setString(2, assignedCaregiver);
                     removeStatement.executeUpdate();
 
-                    String updateVaccine = "UPDATE vaccines SET Doses = ? WHERE name = ?";
+                    String updateVaccine = "UPDATE vaccines SET Doses = Doses - 1 WHERE name = ?";
                     PreparedStatement updateVaccineStatement = con.prepareStatement(updateVaccine);
-                    updateVaccineStatement.setInt(1, currentVaccine.getAvailableDoses() - 1);
-                    updateVaccineStatement.setString(2, vaccineName);
+                    updateVaccineStatement.setString(1, vaccineName);
                     updateVaccineStatement.executeUpdate();
 
                     con.commit();

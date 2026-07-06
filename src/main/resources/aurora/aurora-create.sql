@@ -1,3 +1,9 @@
+DROP TABLE IF EXISTS Reservations CASCADE;
+DROP TABLE IF EXISTS Patients CASCADE;
+DROP TABLE IF EXISTS Vaccines CASCADE;
+DROP TABLE IF EXISTS Availabilities CASCADE;
+DROP TABLE IF EXISTS Caregivers CASCADE;
+
 CREATE TABLE Caregivers (
     Username varchar(255),
     Salt BYTEA,
@@ -13,7 +19,7 @@ CREATE TABLE Availabilities (
 
 CREATE TABLE Vaccines (
     Name varchar(255),
-    Doses int,
+    Doses int CHECK (Doses >= 0),
     PRIMARY KEY (Name)
 );
 
