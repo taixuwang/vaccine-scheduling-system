@@ -21,8 +21,8 @@ public class Scheduler {
     // objects to keep track of the currently logged-in user
     // Note: it is always true that at most one of currentCaregiver and currentPatient is not null
     //       since only one user can be logged-in at a time
-    private static Caregiver currentCaregiver = null;
-    private static Patient currentPatient = null;
+    private static final ThreadLocal<Caregiver> currentCaregiver = new ThreadLocal<>();
+    private static final ThreadLocal<Patient> currentPatient = new ThreadLocal<>();
 
     public static void main(String[] args) {
         // printing greetings text
@@ -231,7 +231,7 @@ public class Scheduler {
     }
 
     private static void loginPatient(String[] tokens) {
-        if (currentPatient != null || currentCaregiver != null) {
+        if (currentPatient.get() != null || currentCaregiver.get() != null) {
             System.out.println("User already logged in, try again");
             return;
         }
@@ -266,14 +266,14 @@ public class Scheduler {
             System.out.println("Login patient failed");
         } else {
             System.out.println("Logged in as " + username);
-            currentPatient = patient;
+            currentPatient.set(patient);
         }
     }
 
     private static void loginCaregiver(String[] tokens) {
         // login_caregiver <username> <password>
         // check 1: if someone's already logged-in, they need to log out first
-        if (currentCaregiver != null || currentPatient != null) {
+        if (currentCaregiver.get() != null || currentPatient.get() != null) {
             System.out.println("User already logged in.");
             return;
         }
@@ -296,12 +296,12 @@ public class Scheduler {
             System.out.println("Login failed.");
         } else {
             System.out.println("Logged in as: " + username);
-            currentCaregiver = caregiver;
+            currentCaregiver.set(caregiver);
         }
     }
 
     private static void searchCaregiverSchedule(String[] tokens) {
-        if (currentPatient == null && currentCaregiver == null) {
+        if (currentPatient.get() == null && currentCaregiver.get() == null) {
             System.out.println("Please login first");
             return;
         }
@@ -353,11 +353,11 @@ public class Scheduler {
     }
 
     private static void reserve(String[] tokens) {
-        if (currentCaregiver != null) {
+        if (currentCaregiver.get() != null) {
             System.out.println("Please login as a patient");
             return;
         }
-        if (currentPatient == null) {
+        if (currentPatient.get() == null) {
             System.out.println("Please login first");
             return;
         }
@@ -394,7 +394,7 @@ public class Scheduler {
                 try {
                     String addReservations = "INSERT INTO Reservations (Patient_name, Caregiver_name, Vaccine_name, Time) VALUES (?, ?, ?, ?)";
                     PreparedStatement addStatement = con.prepareStatement(addReservations, java.sql.Statement.RETURN_GENERATED_KEYS);
-                    addStatement.setString(1, currentPatient.getUsername());
+                    addStatement.setString(1, currentPatient.get().getUsername());
                     addStatement.setString(2, assignedCaregiver);
                     addStatement.setString(3, vaccineName);
                     addStatement.setDate(4, d);
@@ -440,7 +440,7 @@ public class Scheduler {
     private static void uploadAvailability(String[] tokens) {
         // upload_availability <date>
         // check 1: check if the current logged-in user is a caregiver
-        if (currentCaregiver == null) {
+        if (currentCaregiver.get() == null) {
             System.out.println("Please login as a caregiver first!");
             return;
         }
@@ -452,7 +452,7 @@ public class Scheduler {
         String date = tokens[1];
         try {
             Date d = Date.valueOf(date);
-            currentCaregiver.uploadAvailability(d);
+            currentCaregiver.get().uploadAvailability(d);
             System.out.println("Availability uploaded!");
         } catch (IllegalArgumentException e) {
             System.out.println("Please enter a valid date!");
@@ -462,7 +462,7 @@ public class Scheduler {
     }
 
     private static void cancel(String[] tokens) {
-        if (currentPatient == null && currentCaregiver == null) {
+        if (currentPatient.get() == null && currentCaregiver.get() == null) {
             System.out.println("Please login first");
             return;
         }
@@ -491,11 +491,11 @@ public class Scheduler {
                 result.close();
                 statement.close();
                 
-                if (currentPatient != null && !currentPatient.getUsername().equals(patientName)) {
+                if (currentPatient.get() != null && !currentPatient.get().getUsername().equals(patientName)) {
                     System.out.println("Please try again");
                     return;
                 }
-                if (currentCaregiver != null && !currentCaregiver.getUsername().equals(caregiverName)) {
+                if (currentCaregiver.get() != null && !currentCaregiver.get().getUsername().equals(caregiverName)) {
                     System.out.println("Please try again");
                     return;
                 }
@@ -541,7 +541,7 @@ public class Scheduler {
     private static void addDoses(String[] tokens) {
         // add_doses <vaccine> <number>
         // check 1: check if the current logged-in user is a caregiver
-        if (currentCaregiver == null) {
+        if (currentCaregiver.get() == null) {
             System.out.println("Please login as a caregiver first!");
             return;
         }
@@ -579,7 +579,7 @@ public class Scheduler {
     }
 
     private static void showAppointments(String[] tokens) {
-        if (currentPatient == null && currentCaregiver == null) {
+        if (currentPatient.get() == null && currentCaregiver.get() == null) {
             System.out.println("Please login first");
             return;
         }
@@ -594,14 +594,14 @@ public class Scheduler {
 
         try {
             PreparedStatement statement;
-            if (currentPatient != null) {
+            if (currentPatient.get() != null) {
                 String getAppointments = "SELECT R.Appointment_id, R.Vaccine_name, R.Time, R.Caregiver_name as Name FROM Reservations as R WHERE R.Patient_name = ? ORDER BY R.Appointment_id";
                 statement = con.prepareStatement(getAppointments);
-                statement.setString(1, currentPatient.getUsername());
+                statement.setString(1, currentPatient.get().getUsername());
             } else {
                 String getAppointments = "SELECT R.Appointment_id, R.Vaccine_name, R.Time, R.Patient_name as Name FROM Reservations as R WHERE R.Caregiver_name = ? ORDER BY R.Appointment_id";
                 statement = con.prepareStatement(getAppointments);
-                statement.setString(1, currentCaregiver.getUsername());    
+                statement.setString(1, currentCaregiver.get().getUsername());    
             }
             ResultSet result = statement.executeQuery();
             boolean hasAppointments = false;
@@ -620,7 +620,7 @@ public class Scheduler {
     }
 
     private static void logout(String[] tokens) {
-        if (currentPatient == null && currentCaregiver == null) {
+        if (currentPatient.get() == null && currentCaregiver.get() == null) {
             System.out.println("Please login first");
             return;
         }
@@ -630,8 +630,8 @@ public class Scheduler {
             return;
         }
 
-        currentPatient = null;
-        currentCaregiver = null;
+        currentPatient.remove();
+        currentCaregiver.remove();
         System.out.println("Successfully logged out");
     }
 }
