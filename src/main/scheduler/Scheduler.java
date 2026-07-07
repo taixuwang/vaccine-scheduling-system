@@ -370,70 +370,98 @@ public class Scheduler {
         String date = tokens[1];
         String vaccineName = tokens[2];
 
-        ConnectionManager cm = new ConnectionManager();
-        Connection con = cm.createConnection();
+        // 1. Redis Cache Interception
+        String redisKey = "vaccine:" + vaccineName + ":doses";
+        long currentStock = -1;
+        try (var jedis = scheduler.db.RedisManager.getJedis()) {
+            currentStock = jedis.decr(redisKey);
+        } catch (Exception e) {
+            currentStock = 1; // Fallback to DB if Redis is down
+        }
 
+        if (currentStock < 0) {
+            try (var jedis = scheduler.db.RedisManager.getJedis()) {
+                jedis.incr(redisKey); // Revert the negative count
+            } catch (Exception e) {}
+            System.out.println("Not enough available doses");
+            return;
+        }
+
+        boolean reserveSuccess = false;
         try {
-            String getCaregiver = "SELECT A.Username FROM Availabilities as A WHERE Time = ? ORDER BY A.Username";
-            PreparedStatement caregiverStatement = con.prepareStatement(getCaregiver);
-            Date d = Date.valueOf(date);
-            caregiverStatement.setDate(1, d);
-            ResultSet caregiverResult = caregiverStatement.executeQuery();
-            if (caregiverResult.next()) {
-                VaccineGetter getVaccine = new VaccineGetter(vaccineName);
-                Vaccine currentVaccine = getVaccine.get();
-                if (currentVaccine == null || currentVaccine.getAvailableDoses() == 0) {
-                    System.out.println("Not enough available doses");
-                    return;
-                }
-                String assignedCaregiver = caregiverResult.getString("Username");
-                caregiverResult.close();
-                caregiverStatement.close();
+            ConnectionManager cm = new ConnectionManager();
+            Connection con = cm.createConnection();
 
-                con.setAutoCommit(false);
-                try {
-                    String addReservations = "INSERT INTO Reservations (Patient_name, Caregiver_name, Vaccine_name, Time) VALUES (?, ?, ?, ?)";
-                    PreparedStatement addStatement = con.prepareStatement(addReservations, java.sql.Statement.RETURN_GENERATED_KEYS);
-                    addStatement.setString(1, currentPatient.get().getUsername());
-                    addStatement.setString(2, assignedCaregiver);
-                    addStatement.setString(3, vaccineName);
-                    addStatement.setDate(4, d);
-                    addStatement.executeUpdate();
-
-                    ResultSet generatedKeys = addStatement.getGeneratedKeys();
-                    int currentId = 0;
-                    if (generatedKeys.next()) {
-                        currentId = generatedKeys.getInt(1);
+            try {
+                String getCaregiver = "SELECT A.Username FROM Availabilities as A WHERE Time = ? ORDER BY A.Username";
+                PreparedStatement caregiverStatement = con.prepareStatement(getCaregiver);
+                Date d = Date.valueOf(date);
+                caregiverStatement.setDate(1, d);
+                ResultSet caregiverResult = caregiverStatement.executeQuery();
+                if (caregiverResult.next()) {
+                    VaccineGetter getVaccine = new VaccineGetter(vaccineName);
+                    Vaccine currentVaccine = getVaccine.get();
+                    if (currentVaccine == null || currentVaccine.getAvailableDoses() == 0) {
+                        System.out.println("Not enough available doses");
+                        return; // Revert will happen in finally
                     }
-                    System.out.println("Appointment ID "+ currentId + ", Caregiver username " + assignedCaregiver);
+                    String assignedCaregiver = caregiverResult.getString("Username");
+                    caregiverResult.close();
+                    caregiverStatement.close();
 
-                    String removeAvailability = "DELETE FROM Availabilities as A WHERE A.Time = ? AND A.Username = ?";
-                    PreparedStatement removeStatement = con.prepareStatement(removeAvailability);
-                    removeStatement.setDate(1, d);
-                    removeStatement.setString(2, assignedCaregiver);
-                    removeStatement.executeUpdate();
+                    con.setAutoCommit(false);
+                    try {
+                        String addReservations = "INSERT INTO Reservations (Patient_name, Caregiver_name, Vaccine_name, Time) VALUES (?, ?, ?, ?)";
+                        PreparedStatement addStatement = con.prepareStatement(addReservations, java.sql.Statement.RETURN_GENERATED_KEYS);
+                        addStatement.setString(1, currentPatient.get().getUsername());
+                        addStatement.setString(2, assignedCaregiver);
+                        addStatement.setString(3, vaccineName);
+                        addStatement.setDate(4, d);
+                        addStatement.executeUpdate();
 
-                    String updateVaccine = "UPDATE vaccines SET Doses = Doses - 1 WHERE name = ?";
-                    PreparedStatement updateVaccineStatement = con.prepareStatement(updateVaccine);
-                    updateVaccineStatement.setString(1, vaccineName);
-                    updateVaccineStatement.executeUpdate();
+                        ResultSet generatedKeys = addStatement.getGeneratedKeys();
+                        int currentId = 0;
+                        if (generatedKeys.next()) {
+                            currentId = generatedKeys.getInt(1);
+                        }
+                        System.out.println("Appointment ID "+ currentId + ", Caregiver username " + assignedCaregiver);
 
-                    con.commit();
-                } catch (SQLException e) {
-                    con.rollback();
-                    throw e;
-                } finally {
-                    con.setAutoCommit(true);
+                        String removeAvailability = "DELETE FROM Availabilities as A WHERE A.Time = ? AND A.Username = ?";
+                        PreparedStatement removeStatement = con.prepareStatement(removeAvailability);
+                        removeStatement.setDate(1, d);
+                        removeStatement.setString(2, assignedCaregiver);
+                        removeStatement.executeUpdate();
+
+                        String updateVaccine = "UPDATE vaccines SET Doses = Doses - 1 WHERE name = ?";
+                        PreparedStatement updateVaccineStatement = con.prepareStatement(updateVaccine);
+                        updateVaccineStatement.setString(1, vaccineName);
+                        updateVaccineStatement.executeUpdate();
+
+                        con.commit();
+                        reserveSuccess = true; // Mark as success!
+                    } catch (SQLException e) {
+                        con.rollback();
+                        throw e;
+                    } finally {
+                        con.setAutoCommit(true);
+                    }
+                } else {
+                    System.out.println("No caregiver is available");
                 }
-            } else {
-                System.out.println("No caregiver is available");
+            } catch (IllegalArgumentException e) {
+                System.out.println("Please try again");
+            } catch (SQLException e) {
+                System.out.println("Please try again");
+            } finally {
+                cm.closeConnection();
             }
-        } catch (IllegalArgumentException e) {
-            System.out.println("Please try again");
-        } catch (SQLException e) {
-            System.out.println("Please try again");
         } finally {
-            cm.closeConnection();
+            if (!reserveSuccess) {
+                // If anything failed, return the dose to Redis
+                try (var jedis = scheduler.db.RedisManager.getJedis()) {
+                    jedis.incr(redisKey);
+                } catch (Exception e) {}
+            }
         }
     }
 
