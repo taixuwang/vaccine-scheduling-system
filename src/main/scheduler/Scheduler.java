@@ -566,6 +566,7 @@ public class Scheduler {
                 vaccine.saveToDB();
             } catch (SQLException e) {
                 System.out.println("Error occurred when adding doses");
+                return;
             }
         } else {
             // if the vaccine is not null, meaning that the vaccine already exists in our table
@@ -573,8 +574,18 @@ public class Scheduler {
                 vaccine.increaseAvailableDoses(doses);
             } catch (SQLException e) {
                 System.out.println("Error occurred when adding doses");
+                return;
             }
         }
+
+        // Sync to Redis Cache
+        try (var jedis = scheduler.db.RedisManager.getJedis()) {
+            String redisKey = "vaccine:" + vaccineName + ":doses";
+            jedis.incrBy(redisKey, doses);
+        } catch (Exception e) {
+            System.out.println("Warning: Failed to sync doses to Redis cache.");
+        }
+
         System.out.println("Doses updated!");
     }
 
