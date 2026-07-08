@@ -1,4 +1,12 @@
-package scheduler;
+package scheduler.service;
+
+import org.springframework.stereotype.Service;
+import scheduler.context.UserContext;
+import java.util.ArrayList;
+import java.util.List;
+import scheduler.model.*;
+import scheduler.db.*;
+import scheduler.util.*;
 
 import scheduler.db.ConnectionManager;
 import scheduler.model.Caregiver;
@@ -16,83 +24,13 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Date;
 
-public class Scheduler {
+@Service
+public class SchedulerService {
 
     // objects to keep track of the currently logged-in user
     // Note: it is always true that at most one of currentCaregiver and currentPatient is not null
     //       since only one user can be logged-in at a time
-    private static final ThreadLocal<Caregiver> currentCaregiver = new ThreadLocal<>();
-    private static final ThreadLocal<Patient> currentPatient = new ThreadLocal<>();
-
-    public static void main(String[] args) {
-        // printing greetings text
-        System.out.println();
-        System.out.println("Welcome to the COVID-19 Vaccine Reservation Scheduling Application!");
-        System.out.println("*** Please enter one of the following commands ***");
-        System.out.println("> create_patient <username> <password>");  //TODO: implement create_patient (Part 1)
-        System.out.println("> create_caregiver <username> <password>");
-        System.out.println("> login_patient <username> <password>");  // TODO: implement login_patient (Part 1)
-        System.out.println("> login_caregiver <username> <password>");
-        System.out.println("> search_caregiver_schedule <date>");  // TODO: implement search_caregiver_schedule (Part 2)
-        System.out.println("> reserve <date> <vaccine>");  // TODO: implement reserve (Part 2)
-        System.out.println("> upload_availability <date>");
-        System.out.println("> cancel <appointment_id>");  // TODO: implement cancel (extra credit)
-        System.out.println("> add_doses <vaccine> <number>");
-        System.out.println("> show_appointments");  // TODO: implement show_appointments (Part 2)
-        System.out.println("> logout");  // TODO: implement logout (Part 2)
-        System.out.println("> quit");
-        System.out.println();
-
-        // read input from user
-        BufferedReader r = new BufferedReader(new InputStreamReader(System.in));
-        while (true) {
-            System.out.print("> ");
-            String response = "";
-            try {
-                response = r.readLine();
-            } catch (IOException e) {
-                System.out.println("Please try again!");
-            }
-            // split the user input by spaces
-            String[] tokens = response.split(" ");
-            // check if input exists
-            if (tokens.length == 0) {
-                System.out.println("Please try again!");
-                continue;
-            }
-            // determine which operation to perform
-            String operation = tokens[0];
-            if (operation.equals("create_patient")) {
-                createPatient(tokens);
-            } else if (operation.equals("create_caregiver")) {
-                createCaregiver(tokens);
-            } else if (operation.equals("login_patient")) {
-                loginPatient(tokens);
-            } else if (operation.equals("login_caregiver")) {
-                loginCaregiver(tokens);
-            } else if (operation.equals("search_caregiver_schedule")) {
-                searchCaregiverSchedule(tokens);
-            } else if (operation.equals("reserve")) {
-                reserve(tokens);
-            } else if (operation.equals("upload_availability")) {
-                uploadAvailability(tokens);
-            } else if (operation.equals("cancel")) {
-                cancel(tokens);
-            } else if (operation.equals("add_doses")) {
-                addDoses(tokens);
-            } else if (operation.equals("show_appointments")) {
-                showAppointments(tokens);
-            } else if (operation.equals("logout")) {
-                logout(tokens);
-            } else if (operation.equals("quit")) {
-                System.out.println("Bye!");
-                return;
-            } else {
-                System.out.println("Invalid operation name!");
-            }
-        }
-    }
-
+        
     private static boolean checkPassword(String password) {
         if (password.length() < 8) {
             return false;
@@ -122,30 +60,19 @@ public class Scheduler {
         return true;
     }
 
-    private static void createPatient(String[] tokens) {
-        if (tokens.length != 3) {
-            System.out.println("Create patient failed");
-            return;
-        }
-        
-        String username = tokens[1];
-        String password = tokens[2];
+    public String createPatient(String username, String password) {
+
 
         if (!checkPassword(password)) {
-            System.out.println("Create patient failed, please use a strong password " +
-            "(8+ char, at least one upper and one lower, at least one letter and one number, " +
-            "and at least one special character, from \"!\", \"@\", \"#\", \"?\")");
-            return;
+            throw new RuntimeException("Create patient failed, please use a strong password");
         }
 
         try {
             if (usernameExistsPatient(username)) {
-                System.out.println("Username taken, try again");
-                return;
+                throw new RuntimeException("Username taken, try again");
             }
         } catch (SQLException e) {
-            System.out.println("Create patient failed");
-            return;
+            throw new RuntimeException("Create patient failed");
         }
 
         byte[] salt = Util.generateSalt();
@@ -154,7 +81,7 @@ public class Scheduler {
         try {
             Patient patient = new Patient.PatientBuilder(username, salt, hash).build();
             patient.saveToDB();
-            System.out.println("Created user " + username);
+            return "Created user " + username;
         } catch (SQLException e) {
             System.out.println("Create patient failed");
         }
@@ -176,27 +103,17 @@ public class Scheduler {
         } finally {
             cm.closeConnection();
         }
+        return res;
     }
 
-    private static void createCaregiver(String[] tokens) {
-        // create_caregiver <username> <password>
-        // check 1: the length for tokens need to be exactly 3 to include all information (with the operation name)
-        if (tokens.length != 3) {
-            System.out.println("Failed to create user.");
-            return;
-        }
-        String username = tokens[1];
-        String password = tokens[2];
+    public String createCaregiver(String username, String password) {
+
         if (!checkPassword(password)) {
-            System.out.println("Create caregiver failed, please use a strong password " +
-            "(8+ char, at least one upper and one lower, at least one letter and one number, " +
-            "and at least one special character, from \"!\", \"@\", \"#\", \"?\")");
-            return;
+            throw new RuntimeException("Create caregiver failed, please use a strong password");
         }
         // check 2: check if the username has been taken already
         if (usernameExistsCaregiver(username)) {
-            System.out.println("Username taken, try again!");
-            return;
+            throw new RuntimeException("Username taken, try again!");
         }
         byte[] salt = Util.generateSalt();
         byte[] hash = Util.generateHash(password, salt);
@@ -205,7 +122,7 @@ public class Scheduler {
             Caregiver caregiver = new Caregiver.CaregiverBuilder(username, salt, hash).build(); 
             // save to caregiver information to our database
             caregiver.saveToDB();
-            System.out.println("Created user " + username);
+            return "Created user " + username;
         } catch (SQLException e) {
             System.out.println("Failed to create user.");
         }
@@ -230,19 +147,12 @@ public class Scheduler {
         return true;
     }
 
-    private static void loginPatient(String[] tokens) {
-        if (currentPatient.get() != null || currentCaregiver.get() != null) {
-            System.out.println("User already logged in, try again");
-            return;
+    public String loginPatient(String username, String password) {
+        if (UserContext.getPatient() != null || UserContext.getCaregiver() != null) {
+            throw new RuntimeException("User already logged in, try again");
         }
         
-        if (tokens.length != 3) {
-            System.out.println("Login patient failed");
-            return;
-        }
-        
-        String username = tokens[1];
-        String password = tokens[2];
+
 
         try {
             if (!usernameExistsPatient(username)) {
@@ -250,40 +160,31 @@ public class Scheduler {
                 return;
             }
         } catch (SQLException e) {
-            System.out.println("Login patient failed");
-            return;
+            throw new RuntimeException("Login patient failed");
         }
 
         Patient patient = null;
         try {
             patient = new Patient.PatientGetter(username, password).get();
         } catch (SQLException e) {
-            System.out.println("Login patient failed");
-            return;
+            throw new RuntimeException("Login patient failed");
         }
 
         if (patient == null) {
-            System.out.println("Login patient failed");
+            throw new RuntimeException("Login patient failed");
         } else {
-            System.out.println("Logged in as " + username);
-            currentPatient.set(patient);
+            UserContext.setPatient(patient);
+            return "Logged in as " + username;
         }
     }
 
-    private static void loginCaregiver(String[] tokens) {
+    public String loginCaregiver(String username, String password) {
         // login_caregiver <username> <password>
         // check 1: if someone's already logged-in, they need to log out first
-        if (currentCaregiver.get() != null || currentPatient.get() != null) {
-            System.out.println("User already logged in.");
-            return;
+        if (UserContext.getCaregiver() != null || UserContext.getPatient() != null) {
+            throw new RuntimeException("User already logged in.");
         }
-        // check 2: the length for tokens need to be exactly 3 to include all information (with the operation name)
-        if (tokens.length != 3) {
-            System.out.println("Login failed.");
-            return;
-        }
-        String username = tokens[1];
-        String password = tokens[2];
+
 
         Caregiver caregiver = null;
         try {
@@ -293,25 +194,19 @@ public class Scheduler {
         }
         // check if the login was successful
         if (caregiver == null) {
-            System.out.println("Login failed.");
+            throw new RuntimeException("Login failed.");
         } else {
-            System.out.println("Logged in as: " + username);
-            currentCaregiver.set(caregiver);
+            UserContext.setCaregiver(caregiver);
+            return "Logged in as: " + username;
         }
     }
 
-    private static void searchCaregiverSchedule(String[] tokens) {
-        if (currentPatient.get() == null && currentCaregiver.get() == null) {
-            System.out.println("Please login first");
-            return;
+    public List<String> searchCaregiverSchedule(String date) {
+        if (UserContext.getPatient() == null && UserContext.getCaregiver() == null) {
+            throw new RuntimeException("Please login first");
         }
         
-        if (tokens.length != 2) {
-            System.out.println("Please try again");
-            return;
-        }
-        
-        String date = tokens[1];
+
 
         ConnectionManager cm = new ConnectionManager();
         Connection con = cm.createConnection();
@@ -322,48 +217,48 @@ public class Scheduler {
             Date d = Date.valueOf(date);
             sheduleStatement.setDate(1, d);
             ResultSet scheduleResult = sheduleStatement.executeQuery();
-            System.out.println("Caregivers:");
+            List<String> res = new ArrayList<>();
+            res.add("Caregivers:");
             boolean hasCaregivers = false;
             while (scheduleResult.next()) {
                 hasCaregivers = true;
-                System.out.println(scheduleResult.getString("Username"));
+                res.add(scheduleResult.getString("Username"));
             }
             if (!hasCaregivers) {
-                System.out.println("No caregivers available");
+                res.add("No caregivers available");
             }
             String getVaccine = "SELECT V.Name, V.Doses FROM Vaccines as V WHERE V.Doses > 0";
             PreparedStatement vaccineStatement = con.prepareStatement(getVaccine);
             ResultSet vaccineResult = vaccineStatement.executeQuery();
-            System.out.println("Vaccines:");
+            res.add("Vaccines:");
             boolean hasVaccines = false;
             while (vaccineResult.next()) {
                 hasVaccines = true;
-                System.out.println(vaccineResult.getString("Name") + " " + vaccineResult.getInt("Doses"));
+                res.add(vaccineResult.getString("Name") + " " + vaccineResult.getInt("Doses"));
             }
             if (!hasVaccines) {
-                System.out.println("No vaccines available");
+                res.add("No vaccines available");
             }
         } catch (IllegalArgumentException e) {
-            System.out.println("Please try again");
+            throw new RuntimeException("Please try again");
         } catch (SQLException e) {
-            System.out.println("Please try again");
+            throw new RuntimeException("Please try again");
         } finally {
             cm.closeConnection();
         }
+        return res;
     }
 
-    private static void reserve(String[] tokens) {
-        if (currentCaregiver.get() != null) {
-            System.out.println("Please login as a patient");
-            return;
+    public String reserve(String date, String vaccineName) {
+        if (UserContext.getCaregiver() != null) {
+            throw new RuntimeException("Please login as a patient");
         }
-        if (currentPatient.get() == null) {
-            System.out.println("Please login first");
-            return;
+        if (UserContext.getPatient() == null) {
+            throw new RuntimeException("Please login first");
         }
         
         if (tokens.length != 3) {
-            System.out.println("Please try again");
+            throw new RuntimeException("Please try again");
             return;
         }
 
@@ -383,8 +278,7 @@ public class Scheduler {
             try (var jedis = scheduler.db.RedisManager.getJedis()) {
                 jedis.incr(redisKey); // Revert the negative count
             } catch (Exception e) {}
-            System.out.println("Not enough available doses");
-            return;
+            throw new RuntimeException("Not enough available doses");
         }
 
         boolean reserveSuccess = false;
@@ -403,9 +297,8 @@ public class Scheduler {
                     VaccineGetter getVaccine = new VaccineGetter(vaccineName);
                     Vaccine currentVaccine = getVaccine.get();
                     if (currentVaccine == null || currentVaccine.getAvailableDoses() == 0) {
-                        System.out.println("Not enough available doses");
                         con.rollback();
-                        return; // Revert will happen in finally
+                        throw new RuntimeException("Not enough available doses"); // Revert will happen in finally
                     }
                     String assignedCaregiver = caregiverResult.getString("Username");
                     caregiverResult.close();
@@ -414,7 +307,7 @@ public class Scheduler {
                     try {
                         String addReservations = "INSERT INTO Reservations (Patient_name, Caregiver_name, Vaccine_name, Time) VALUES (?, ?, ?, ?)";
                         PreparedStatement addStatement = con.prepareStatement(addReservations, java.sql.Statement.RETURN_GENERATED_KEYS);
-                        addStatement.setString(1, currentPatient.get().getUsername());
+                        addStatement.setString(1, UserContext.getPatient().getUsername());
                         addStatement.setString(2, assignedCaregiver);
                         addStatement.setString(3, vaccineName);
                         addStatement.setDate(4, d);
@@ -425,7 +318,7 @@ public class Scheduler {
                         if (generatedKeys.next()) {
                             currentId = generatedKeys.getInt(1);
                         }
-                        System.out.println("Appointment ID "+ currentId + ", Caregiver username " + assignedCaregiver);
+                        String resMsg = "Appointment ID "+ currentId + ", Caregiver username " + assignedCaregiver;
 
                         String removeAvailability = "DELETE FROM Availabilities as A WHERE A.Time = ? AND A.Username = ?";
                         PreparedStatement removeStatement = con.prepareStatement(removeAvailability);
@@ -440,19 +333,20 @@ public class Scheduler {
 
                         con.commit();
                         reserveSuccess = true; // Mark as success!
+                        return resMsg;
                     } catch (SQLException e) {
                         con.rollback();
                         throw e;
                     }
                 } else {
-                    System.out.println("No caregiver is available");
                     con.rollback();
+                    throw new RuntimeException("No caregiver is available");
                 }
             } catch (IllegalArgumentException e) {
-                System.out.println("Please try again");
+                throw new RuntimeException("Please try again");
             } catch (SQLException e) {
                 try { con.rollback(); } catch (SQLException ex) {}
-                System.out.println("Please try again");
+                throw new RuntimeException("Please try again");
             } finally {
                 try { con.setAutoCommit(true); } catch (SQLException ex) {}
                 cm.closeConnection();
@@ -467,38 +361,31 @@ public class Scheduler {
         }
     }
 
-    private static void uploadAvailability(String[] tokens) {
+    public String uploadAvailability(String date) {
         // upload_availability <date>
         // check 1: check if the current logged-in user is a caregiver
-        if (currentCaregiver.get() == null) {
-            System.out.println("Please login as a caregiver first!");
-            return;
+        if (UserContext.getCaregiver() == null) {
+            throw new RuntimeException("Please login as a caregiver first!");
         }
-        // check 2: the length for tokens need to be exactly 2 to include all information (with the operation name)
-        if (tokens.length != 2) {
-            System.out.println("Please try again!");
-            return;
-        }
-        String date = tokens[1];
+
         try {
             Date d = Date.valueOf(date);
-            currentCaregiver.get().uploadAvailability(d);
-            System.out.println("Availability uploaded!");
+            UserContext.getCaregiver().uploadAvailability(d);
+            return "Availability uploaded!";
         } catch (IllegalArgumentException e) {
-            System.out.println("Please enter a valid date!");
+            throw new RuntimeException("Please enter a valid date!");
         } catch (SQLException e) {
-            System.out.println("Error occurred when uploading availability");
+            throw new RuntimeException("Error occurred when uploading availability");
         }
     }
 
-    private static void cancel(String[] tokens) {
-        if (currentPatient.get() == null && currentCaregiver.get() == null) {
-            System.out.println("Please login first");
-            return;
+    public String cancel(String appointmentId) {
+        if (UserContext.getPatient() == null && UserContext.getCaregiver() == null) {
+            throw new RuntimeException("Please login first");
         }
         
         if (tokens.length != 2) {
-            System.out.println("Please try again");
+            throw new RuntimeException("Please try again");
             return;
         }
 
@@ -521,12 +408,12 @@ public class Scheduler {
                 result.close();
                 statement.close();
                 
-                if (currentPatient.get() != null && !currentPatient.get().getUsername().equals(patientName)) {
-                    System.out.println("Please try again");
+                if (UserContext.getPatient() != null && !UserContext.getPatient().getUsername().equals(patientName)) {
+                    throw new RuntimeException("Please try again");
                     return;
                 }
-                if (currentCaregiver.get() != null && !currentCaregiver.get().getUsername().equals(caregiverName)) {
-                    System.out.println("Please try again");
+                if (UserContext.getCaregiver() != null && !UserContext.getCaregiver().getUsername().equals(caregiverName)) {
+                    throw new RuntimeException("Please try again");
                     return;
                 }
 
@@ -553,7 +440,7 @@ public class Scheduler {
                     addStatement.executeUpdate();
 
                     con.commit();
-                    System.out.println("Appointment ID " + appointmentId + " has been successfully canceled");
+                    return "Appointment ID " + appointmentId + " has been successfully canceled";
                 } catch (SQLException e) {
                     con.rollback();
                     throw e;
@@ -561,27 +448,20 @@ public class Scheduler {
                     con.setAutoCommit(true);
                 }
             } else {
-                System.out.println("Appointment ID " + appointmentId + " does not exist");
+                throw new RuntimeException("Appointment ID " + appointmentId + " does not exist");
             }
         } catch (SQLException e) {
-            System.out.println("Please try again");
+            throw new RuntimeException("Please try again");
         }
     }
 
-    private static void addDoses(String[] tokens) {
+    public String addDoses(String vaccineName, int doses) {
         // add_doses <vaccine> <number>
         // check 1: check if the current logged-in user is a caregiver
-        if (currentCaregiver.get() == null) {
-            System.out.println("Please login as a caregiver first!");
-            return;
+        if (UserContext.getCaregiver() == null) {
+            throw new RuntimeException("Please login as a caregiver first!");
         }
-        // check 2: the length for tokens need to be exactly 3 to include all information (with the operation name)
-        if (tokens.length != 3) {
-            System.out.println("Please try again!");
-            return;
-        }
-        String vaccineName = tokens[1];
-        int doses = Integer.parseInt(tokens[2]);
+
         Vaccine vaccine = null;
         try {
             vaccine = new Vaccine.VaccineGetter(vaccineName).get();
@@ -595,16 +475,14 @@ public class Scheduler {
                 vaccine = new Vaccine.VaccineBuilder(vaccineName, doses).build();
                 vaccine.saveToDB();
             } catch (SQLException e) {
-                System.out.println("Error occurred when adding doses");
-                return;
+                throw new RuntimeException("Error occurred when adding doses");
             }
         } else {
             // if the vaccine is not null, meaning that the vaccine already exists in our table
             try {
                 vaccine.increaseAvailableDoses(doses);
             } catch (SQLException e) {
-                System.out.println("Error occurred when adding doses");
-                return;
+                throw new RuntimeException("Error occurred when adding doses");
             }
         }
 
@@ -616,17 +494,16 @@ public class Scheduler {
             System.out.println("Warning: Failed to sync doses to Redis cache.");
         }
 
-        System.out.println("Doses updated!");
+        return "Doses updated!";
     }
 
-    private static void showAppointments(String[] tokens) {
-        if (currentPatient.get() == null && currentCaregiver.get() == null) {
-            System.out.println("Please login first");
-            return;
+    public List<String> showAppointments() {
+        if (UserContext.getPatient() == null && UserContext.getCaregiver() == null) {
+            throw new RuntimeException("Please login first");
         }
         
         if (tokens.length != 1) {
-            System.out.println("Please try again");
+            throw new RuntimeException("Please try again");
             return;
         }
 
@@ -635,44 +512,45 @@ public class Scheduler {
 
         try {
             PreparedStatement statement;
-            if (currentPatient.get() != null) {
+            if (UserContext.getPatient() != null) {
                 String getAppointments = "SELECT R.Appointment_id, R.Vaccine_name, R.Time, R.Caregiver_name as Name FROM Reservations as R WHERE R.Patient_name = ? ORDER BY R.Appointment_id";
                 statement = con.prepareStatement(getAppointments);
-                statement.setString(1, currentPatient.get().getUsername());
+                statement.setString(1, UserContext.getPatient().getUsername());
             } else {
                 String getAppointments = "SELECT R.Appointment_id, R.Vaccine_name, R.Time, R.Patient_name as Name FROM Reservations as R WHERE R.Caregiver_name = ? ORDER BY R.Appointment_id";
                 statement = con.prepareStatement(getAppointments);
-                statement.setString(1, currentCaregiver.get().getUsername());    
+                statement.setString(1, UserContext.getCaregiver().getUsername());    
             }
             ResultSet result = statement.executeQuery();
+            List<String> res = new ArrayList<>();
             boolean hasAppointments = false;
             while (result.next()) {
                 hasAppointments = true;
-                System.out.println(result.getInt("Appointment_id") + " " + result.getString("Vaccine_name") + " " + result.getDate("Time") + " " + result.getString("Name"));
+                res.add(result.getInt("Appointment_id") + " " + result.getString("Vaccine_name") + " " + result.getDate("Time") + " " + result.getString("Name"));
             }
             if (!hasAppointments) {
-                System.out.println("No appointments scheduled");
+                res.add("No appointments scheduled");
             }
         } catch (SQLException e) {
-            System.out.println("Please try again");
+            throw new RuntimeException("Please try again");
         } finally {
             cm.closeConnection();
         }
+        return res;
     }
 
-    private static void logout(String[] tokens) {
-        if (currentPatient.get() == null && currentCaregiver.get() == null) {
-            System.out.println("Please login first");
-            return;
+    public String logout() {
+        if (UserContext.getPatient() == null && UserContext.getCaregiver() == null) {
+            throw new RuntimeException("Please login first");
         }
         
         if (tokens.length != 1) {
-            System.out.println("Please try again");
+            throw new RuntimeException("Please try again");
             return;
         }
 
-        currentPatient.remove();
-        currentCaregiver.remove();
-        System.out.println("Successfully logged out");
+        UserContext.clear();
+        UserContext.clear();
+        return "Successfully logged out";
     }
 }

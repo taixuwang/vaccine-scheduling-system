@@ -1,0 +1,57 @@
+package scheduler.controller;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.*;
+import scheduler.dto.ApiResponse;
+import scheduler.dto.DateRequest;
+import scheduler.dto.ReserveRequest;
+import scheduler.service.SchedulerService;
+import java.util.List;
+
+@RestController
+@RequestMapping("/api/reservation")
+public class ReservationController {
+
+    @Autowired
+    private SchedulerService schedulerService;
+
+    @PostMapping("/reserve")
+    public ApiResponse<String> reserve(@RequestBody ReserveRequest request) {
+        try {
+            String msg = schedulerService.reserve(request.getDate(), request.getVaccine());
+            return ApiResponse.success("Success", msg);
+        } catch (Exception e) {
+            return ApiResponse.error(e.getMessage());
+        }
+    }
+
+    @PostMapping("/cancel")
+    public ApiResponse<String> cancel(@RequestParam String appointmentId) {
+        try {
+            String msg = schedulerService.cancel(appointmentId);
+            return ApiResponse.success("Success", msg);
+        } catch (Exception e) {
+            return ApiResponse.error(e.getMessage());
+        }
+    }
+
+    @PostMapping("/search_caregiver_schedule")
+    public ApiResponse<List<String>> searchCaregiverSchedule(@RequestBody DateRequest request) {
+        try {
+            List<String> result = schedulerService.searchCaregiverSchedule(request.getDate());
+            return ApiResponse.success("Success", result);
+        } catch (Exception e) {
+            return ApiResponse.error(e.getMessage());
+        }
+    }
+
+    @GetMapping("/show_appointments")
+    public ApiResponse<List<String>> showAppointments() {
+        try {
+            List<String> result = schedulerService.showAppointments();
+            return ApiResponse.success("Success", result);
+        } catch (Exception e) {
+            return ApiResponse.error(e.getMessage());
+        }
+    }
+}
