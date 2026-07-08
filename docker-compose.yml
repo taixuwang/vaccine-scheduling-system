@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:6
+    ports:
+      - "6379:6379"
+    restart: always
+
+  app1:
+    build: .
+    environment:
+      # External Aurora PostgreSQL database credentials
+      # You can replace these with your actual Aurora credentials or use an .env file
+      - Endpoint=${DB_ENDPOINT:-your-aurora-endpoint}
+      - Database=${DB_NAME:-scheduler_db}
+      - Username=${DB_USER:-postgres}
+      - Password=${DB_PASSWORD:-password}
+      - RedisEndpoint=redis
+    depends_on:
+      - redis
+    restart: on-failure
+
+  app2:
+    build: .
+    environment:
+      - Endpoint=${DB_ENDPOINT:-your-aurora-endpoint}
+      - Database=${DB_NAME:-scheduler_db}
+      - Username=${DB_USER:-postgres}
+      - Password=${DB_PASSWORD:-password}
+      - RedisEndpoint=redis
+    depends_on:
+      - redis
+    restart: on-failure
+
+  app3:
+    build: .
+    environment:
+      - Endpoint=${DB_ENDPOINT:-your-aurora-endpoint}
+      - Database=${DB_NAME:-scheduler_db}
+      - Username=${DB_USER:-postgres}
+      - Password=${DB_PASSWORD:-password}
+      - RedisEndpoint=redis
+    depends_on:
+      - redis
+    restart: on-failure
+
+  nginx:
+    image: nginx:latest
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "80:80"
+    depends_on:
+      - app1
+      - app2
+      - app3
+    restart: always

@@ -14,9 +14,12 @@ public class RedisManager {
         poolConfig.setMinIdle(2);   // Minimum idle connections
         poolConfig.setTestOnBorrow(true); // Validate connection before using
         
-        // Connect to local Redis (assuming default port 6379, no password)
-        // If your Redis has a password, use: new JedisPool(poolConfig, "localhost", 6379, 2000, "yourpassword");
-        jedisPool = new JedisPool(poolConfig, "localhost", 6379);
+        // Connect to Redis. Read endpoint from environment variable if available.
+        String redisHost = System.getenv("RedisEndpoint");
+        if (redisHost == null || redisHost.isEmpty()) {
+            redisHost = "localhost";
+        }
+        jedisPool = new JedisPool(poolConfig, redisHost, 6379);
     }
 
     /**
