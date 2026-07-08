@@ -18,7 +18,7 @@
 *.zip
 *.tar.gz
 *.rar
-!lib/*.jar
+
 
 # IDE Settings
 .vscode/
@@ -31,3 +31,4 @@ hs_err_pid*
 /.idea/
 *.iml
 out/
+target/
