@@ -393,7 +393,8 @@ public class Scheduler {
             Connection con = cm.createConnection();
 
             try {
-                String getCaregiver = "SELECT A.Username FROM Availabilities as A WHERE Time = ? ORDER BY A.Username";
+                con.setAutoCommit(false);
+                String getCaregiver = "SELECT A.Username FROM Availabilities as A WHERE Time = ? ORDER BY A.Username FOR UPDATE";
                 PreparedStatement caregiverStatement = con.prepareStatement(getCaregiver);
                 Date d = Date.valueOf(date);
                 caregiverStatement.setDate(1, d);
@@ -403,13 +404,13 @@ public class Scheduler {
                     Vaccine currentVaccine = getVaccine.get();
                     if (currentVaccine == null || currentVaccine.getAvailableDoses() == 0) {
                         System.out.println("Not enough available doses");
+                        con.rollback();
                         return; // Revert will happen in finally
                     }
                     String assignedCaregiver = caregiverResult.getString("Username");
                     caregiverResult.close();
                     caregiverStatement.close();
 
-                    con.setAutoCommit(false);
                     try {
                         String addReservations = "INSERT INTO Reservations (Patient_name, Caregiver_name, Vaccine_name, Time) VALUES (?, ?, ?, ?)";
                         PreparedStatement addStatement = con.prepareStatement(addReservations, java.sql.Statement.RETURN_GENERATED_KEYS);
@@ -442,17 +443,18 @@ public class Scheduler {
                     } catch (SQLException e) {
                         con.rollback();
                         throw e;
-                    } finally {
-                        con.setAutoCommit(true);
                     }
                 } else {
                     System.out.println("No caregiver is available");
+                    con.rollback();
                 }
             } catch (IllegalArgumentException e) {
                 System.out.println("Please try again");
             } catch (SQLException e) {
+                try { con.rollback(); } catch (SQLException ex) {}
                 System.out.println("Please try again");
             } finally {
+                try { con.setAutoCommit(true); } catch (SQLException ex) {}
                 cm.closeConnection();
             }
         } finally {
