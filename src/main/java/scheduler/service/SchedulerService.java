@@ -8,29 +8,16 @@ import scheduler.model.*;
 import scheduler.db.*;
 import scheduler.util.*;
 
-import scheduler.db.ConnectionManager;
-import scheduler.model.Caregiver;
-import scheduler.model.Patient;
-import scheduler.model.Vaccine;
-import scheduler.model.Vaccine.VaccineGetter;
-import scheduler.util.Util;
-
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Date;
+import scheduler.model.Vaccine.VaccineGetter;
 
 @Service
 public class SchedulerService {
 
-    // objects to keep track of the currently logged-in user
-    // Note: it is always true that at most one of currentCaregiver and currentPatient is not null
-    //       since only one user can be logged-in at a time
-        
     private static boolean checkPassword(String password) {
         if (password.length() < 8) {
             return false;
@@ -54,15 +41,10 @@ public class SchedulerService {
                 hasSpecial = true;
             } 
         }
-        if (!hasUpper || !hasLower || !hasNumber || !hasSpecial) {
-            return false;
-        }
-        return true;
+        return hasUpper && hasLower && hasNumber && hasSpecial;
     }
 
     public String createPatient(String username, String password) {
-
-
         if (!checkPassword(password)) {
             throw new RuntimeException("Create patient failed, please use a strong password");
         }
@@ -83,7 +65,7 @@ public class SchedulerService {
             patient.saveToDB();
             return "Created user " + username;
         } catch (SQLException e) {
-            System.out.println("Create patient failed");
+            throw new RuntimeException("Create patient failed");
         }
     }
 
@@ -96,35 +78,31 @@ public class SchedulerService {
             PreparedStatement statement = con.prepareStatement(selectUsername);
             statement.setString(1, username);
             ResultSet resultSet = statement.executeQuery();
-            // returns false if the cursor is not before the first record or if there are no rows in the ResultSet.
             return resultSet.isBeforeFirst();
         } catch (SQLException e) {
             throw new SQLException();
         } finally {
             cm.closeConnection();
         }
-        return res;
     }
 
     public String createCaregiver(String username, String password) {
-
         if (!checkPassword(password)) {
             throw new RuntimeException("Create caregiver failed, please use a strong password");
         }
-        // check 2: check if the username has been taken already
         if (usernameExistsCaregiver(username)) {
             throw new RuntimeException("Username taken, try again!");
         }
+        
         byte[] salt = Util.generateSalt();
         byte[] hash = Util.generateHash(password, salt);
-        // create the caregiver
+        
         try {
             Caregiver caregiver = new Caregiver.CaregiverBuilder(username, salt, hash).build(); 
-            // save to caregiver information to our database
             caregiver.saveToDB();
             return "Created user " + username;
         } catch (SQLException e) {
-            System.out.println("Failed to create user.");
+            throw new RuntimeException("Failed to create user.");
         }
     }
 
@@ -137,27 +115,22 @@ public class SchedulerService {
             PreparedStatement statement = con.prepareStatement(selectUsername);
             statement.setString(1, username);
             ResultSet resultSet = statement.executeQuery();
-            // returns false if the cursor is not before the first record or if there are no rows in the ResultSet.
             return resultSet.isBeforeFirst();
         } catch (SQLException e) {
-            System.out.println("Error occurred when checking username");
+            throw new RuntimeException("Error occurred when checking username");
         } finally {
             cm.closeConnection();
         }
-        return true;
     }
 
     public String loginPatient(String username, String password) {
         if (UserContext.getPatient() != null || UserContext.getCaregiver() != null) {
             throw new RuntimeException("User already logged in, try again");
         }
-        
-
 
         try {
             if (!usernameExistsPatient(username)) {
-                System.out.println("Login patient failed");
-                return;
+                throw new RuntimeException("Login patient failed");
             }
         } catch (SQLException e) {
             throw new RuntimeException("Login patient failed");
@@ -179,20 +152,17 @@ public class SchedulerService {
     }
 
     public String loginCaregiver(String username, String password) {
-        // login_caregiver <username> <password>
-        // check 1: if someone's already logged-in, they need to log out first
         if (UserContext.getCaregiver() != null || UserContext.getPatient() != null) {
             throw new RuntimeException("User already logged in.");
         }
-
 
         Caregiver caregiver = null;
         try {
             caregiver = new Caregiver.CaregiverGetter(username, password).get();
         } catch (SQLException e) {
-            System.out.println("Login failed.");
+            throw new RuntimeException("Login failed.");
         }
-        // check if the login was successful
+        
         if (caregiver == null) {
             throw new RuntimeException("Login failed.");
         } else {
@@ -205,19 +175,17 @@ public class SchedulerService {
         if (UserContext.getPatient() == null && UserContext.getCaregiver() == null) {
             throw new RuntimeException("Please login first");
         }
-        
-
 
         ConnectionManager cm = new ConnectionManager();
         Connection con = cm.createConnection();
 
-        try{
+        List<String> res = new ArrayList<>();
+        try {
             String getSchedule = "SELECT A.Username FROM Availabilities as A WHERE Time = ? ORDER BY A.Username";
             PreparedStatement sheduleStatement = con.prepareStatement(getSchedule);
             Date d = Date.valueOf(date);
             sheduleStatement.setDate(1, d);
             ResultSet scheduleResult = sheduleStatement.executeQuery();
-            List<String> res = new ArrayList<>();
             res.add("Caregivers:");
             boolean hasCaregivers = false;
             while (scheduleResult.next()) {
@@ -246,6 +214,7 @@ public class SchedulerService {
         } finally {
             cm.closeConnection();
         }
+        
         return res;
     }
 
@@ -256,26 +225,18 @@ public class SchedulerService {
         if (UserContext.getPatient() == null) {
             throw new RuntimeException("Please login first");
         }
-        
-        if (tokens.length != 3) {
-            throw new RuntimeException("Please try again");
-            return;
-        }
-
-        String date = tokens[1];
-        String vaccineName = tokens[2];
 
         // 1. Redis Cache Interception
         String redisKey = "vaccine:" + vaccineName + ":doses";
         long currentStock = -1;
-        try (var jedis = scheduler.db.RedisManager.getJedis()) {
+        try (redis.clients.jedis.Jedis jedis = scheduler.db.RedisManager.getJedis()) {
             currentStock = jedis.decr(redisKey);
         } catch (Exception e) {
             currentStock = 1; // Fallback to DB if Redis is down
         }
 
         if (currentStock < 0) {
-            try (var jedis = scheduler.db.RedisManager.getJedis()) {
+            try (redis.clients.jedis.Jedis jedis = scheduler.db.RedisManager.getJedis()) {
                 jedis.incr(redisKey); // Revert the negative count
             } catch (Exception e) {}
             throw new RuntimeException("Not enough available doses");
@@ -354,7 +315,7 @@ public class SchedulerService {
         } finally {
             if (!reserveSuccess) {
                 // If anything failed, return the dose to Redis
-                try (var jedis = scheduler.db.RedisManager.getJedis()) {
+                try (redis.clients.jedis.Jedis jedis = scheduler.db.RedisManager.getJedis()) {
                     jedis.incr(redisKey);
                 } catch (Exception e) {}
             }
@@ -362,8 +323,6 @@ public class SchedulerService {
     }
 
     public String uploadAvailability(String date) {
-        // upload_availability <date>
-        // check 1: check if the current logged-in user is a caregiver
         if (UserContext.getCaregiver() == null) {
             throw new RuntimeException("Please login as a caregiver first!");
         }
@@ -383,13 +342,6 @@ public class SchedulerService {
         if (UserContext.getPatient() == null && UserContext.getCaregiver() == null) {
             throw new RuntimeException("Please login first");
         }
-        
-        if (tokens.length != 2) {
-            throw new RuntimeException("Please try again");
-            return;
-        }
-
-        String appointmentId = tokens[1];
 
         ConnectionManager cm = new ConnectionManager();
         Connection con = cm.createConnection();
@@ -410,11 +362,9 @@ public class SchedulerService {
                 
                 if (UserContext.getPatient() != null && !UserContext.getPatient().getUsername().equals(patientName)) {
                     throw new RuntimeException("Please try again");
-                    return;
                 }
                 if (UserContext.getCaregiver() != null && !UserContext.getCaregiver().getUsername().equals(caregiverName)) {
                     throw new RuntimeException("Please try again");
-                    return;
                 }
 
                 VaccineGetter getVaccine = new VaccineGetter(vaccineName);
@@ -452,12 +402,12 @@ public class SchedulerService {
             }
         } catch (SQLException e) {
             throw new RuntimeException("Please try again");
+        } finally {
+            cm.closeConnection();
         }
     }
 
     public String addDoses(String vaccineName, int doses) {
-        // add_doses <vaccine> <number>
-        // check 1: check if the current logged-in user is a caregiver
         if (UserContext.getCaregiver() == null) {
             throw new RuntimeException("Please login as a caregiver first!");
         }
@@ -466,10 +416,9 @@ public class SchedulerService {
         try {
             vaccine = new Vaccine.VaccineGetter(vaccineName).get();
         } catch (SQLException e) {
-            System.out.println("Error occurred when adding doses");
+            throw new RuntimeException("Error occurred when adding doses");
         }
-        // check 3: if getter returns null, it means that we need to create the vaccine and insert it into the Vaccines
-        //          table
+        
         if (vaccine == null) {
             try {
                 vaccine = new Vaccine.VaccineBuilder(vaccineName, doses).build();
@@ -478,7 +427,6 @@ public class SchedulerService {
                 throw new RuntimeException("Error occurred when adding doses");
             }
         } else {
-            // if the vaccine is not null, meaning that the vaccine already exists in our table
             try {
                 vaccine.increaseAvailableDoses(doses);
             } catch (SQLException e) {
@@ -486,13 +434,10 @@ public class SchedulerService {
             }
         }
 
-        // Sync to Redis Cache
-        try (var jedis = scheduler.db.RedisManager.getJedis()) {
+        try (redis.clients.jedis.Jedis jedis = scheduler.db.RedisManager.getJedis()) {
             String redisKey = "vaccine:" + vaccineName + ":doses";
             jedis.incrBy(redisKey, doses);
-        } catch (Exception e) {
-            System.out.println("Warning: Failed to sync doses to Redis cache.");
-        }
+        } catch (Exception e) {}
 
         return "Doses updated!";
     }
@@ -501,15 +446,11 @@ public class SchedulerService {
         if (UserContext.getPatient() == null && UserContext.getCaregiver() == null) {
             throw new RuntimeException("Please login first");
         }
-        
-        if (tokens.length != 1) {
-            throw new RuntimeException("Please try again");
-            return;
-        }
 
         ConnectionManager cm = new ConnectionManager();
         Connection con = cm.createConnection();
 
+        List<String> res = new ArrayList<>();
         try {
             PreparedStatement statement;
             if (UserContext.getPatient() != null) {
@@ -522,7 +463,6 @@ public class SchedulerService {
                 statement.setString(1, UserContext.getCaregiver().getUsername());    
             }
             ResultSet result = statement.executeQuery();
-            List<String> res = new ArrayList<>();
             boolean hasAppointments = false;
             while (result.next()) {
                 hasAppointments = true;
@@ -543,13 +483,7 @@ public class SchedulerService {
         if (UserContext.getPatient() == null && UserContext.getCaregiver() == null) {
             throw new RuntimeException("Please login first");
         }
-        
-        if (tokens.length != 1) {
-            throw new RuntimeException("Please try again");
-            return;
-        }
 
-        UserContext.clear();
         UserContext.clear();
         return "Successfully logged out";
     }
