@@ -17,6 +17,7 @@ services:
       - Username=${DB_USER:-postgres}
       - Password=${DB_PASSWORD:-password}
       - RedisEndpoint=redis
+      - JwtSecret=${JWT_SECRET:-change_me_in_production}
     depends_on:
       - redis
     restart: on-failure
@@ -29,6 +30,7 @@ services:
       - Username=${DB_USER:-postgres}
       - Password=${DB_PASSWORD:-password}
       - RedisEndpoint=redis
+      - JwtSecret=${JWT_SECRET:-change_me_in_production}
     depends_on:
       - redis
     restart: on-failure
@@ -41,6 +43,7 @@ services:
       - Username=${DB_USER:-postgres}
       - Password=${DB_PASSWORD:-password}
       - RedisEndpoint=redis
+      - JwtSecret=${JWT_SECRET:-change_me_in_production}
     depends_on:
       - redis
     restart: on-failure

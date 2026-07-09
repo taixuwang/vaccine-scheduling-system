@@ -9,8 +9,16 @@ import com.auth0.jwt.interfaces.JWTVerifier;
 import java.util.Date;
 
 public class JwtUtil {
-    // In a real application, this secret should be stored securely (e.g., environment variable)
-    private static final String SECRET_KEY = "my_super_secret_key_for_vaccine_scheduler";
+    private static final String SECRET_KEY;
+
+    static {
+        String envSecret = System.getenv("JwtSecret");
+        if (envSecret != null && !envSecret.isEmpty()) {
+            SECRET_KEY = envSecret;
+        } else {
+            SECRET_KEY = "my_super_secret_key_for_vaccine_scheduler"; // fallback for local dev
+        }
+    }
     private static final long EXPIRATION_TIME_MS = 24 * 60 * 60 * 1000; // 24 hours
 
     public static String generateToken(String username, String role) {

@@ -390,6 +390,15 @@ public class SchedulerService {
                     addStatement.executeUpdate();
 
                     con.commit();
+
+                    // Sync Redis cache with restored dose
+                    try (redis.clients.jedis.Jedis jedis = scheduler.db.RedisManager.getJedis()) {
+                        String redisKey = "vaccine:" + vaccineName + ":doses";
+                        jedis.incr(redisKey);
+                    } catch (Exception redisEx) {
+                        // Redis update is best-effort; DB is the source of truth
+                    }
+
                     return "Appointment ID " + appointmentId + " has been successfully canceled";
                 } catch (SQLException e) {
                     con.rollback();
