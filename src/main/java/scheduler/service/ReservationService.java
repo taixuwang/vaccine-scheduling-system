@@ -173,13 +173,20 @@ public class ReservationService {
             throw new RuntimeException("Please login first");
         }
 
+        int appId;
+        try {
+            appId = Integer.parseInt(appointmentId);
+        } catch (NumberFormatException e) {
+            throw new RuntimeException("Appointment ID " + appointmentId + " does not exist");
+        }
+
         ConnectionManager cm = new ConnectionManager();
         Connection con = cm.createConnection();
 
         try {
             String getAppointment = "SELECT R.Appointment_id, R.Patient_name, R.Caregiver_name, R.Vaccine_name, R.Time FROM Reservations as R WHERE R.Appointment_id = ?";
             PreparedStatement statement = con.prepareStatement(getAppointment);
-            statement.setString(1, appointmentId);
+            statement.setInt(1, appId);
             ResultSet result = statement.executeQuery();
             if (result.next()) {
                 String patientName = result.getString("Patient_name");
@@ -197,20 +204,18 @@ public class ReservationService {
                     throw new RuntimeException("Please try again");
                 }
 
-                VaccineGetter getVaccine = new VaccineGetter(vaccineName);
-                Vaccine vaccine = getVaccine.get();
+                // We no longer need VaccineGetter since we do an atomic increment directly
 
                 con.setAutoCommit(false);
                 try {
                     String deleteReservation = "DELETE FROM Reservations as R WHERE R.Appointment_id = ?";
                     PreparedStatement deleteStatement = con.prepareStatement(deleteReservation);
-                    deleteStatement.setString(1, appointmentId);
+                    deleteStatement.setInt(1, appId);
                     deleteStatement.executeUpdate();
                     
-                    String updateVaccine = "UPDATE vaccines SET Doses = ? WHERE name = ?";
+                    String updateVaccine = "UPDATE vaccines SET Doses = Doses + 1 WHERE name = ?";
                     PreparedStatement updateVaccineStatement = con.prepareStatement(updateVaccine);
-                    updateVaccineStatement.setInt(1, vaccine.getAvailableDoses() + 1);
-                    updateVaccineStatement.setString(2, vaccineName);
+                    updateVaccineStatement.setString(1, vaccineName);
                     updateVaccineStatement.executeUpdate();
                     
                     String addAvailability = "INSERT INTO Availabilities VALUES (?, ?)";
