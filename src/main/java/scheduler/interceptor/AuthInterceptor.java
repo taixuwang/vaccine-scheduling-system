@@ -5,6 +5,9 @@ import org.springframework.web.servlet.HandlerInterceptor;
 import scheduler.context.UserContext;
 import scheduler.model.Caregiver;
 import scheduler.model.Patient;
+import scheduler.util.JwtUtil;
+import com.auth0.jwt.interfaces.DecodedJWT;
+import com.auth0.jwt.exceptions.JWTVerificationException;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
@@ -18,14 +21,20 @@ public class AuthInterceptor implements HandlerInterceptor {
         if (authHeader != null && authHeader.startsWith("Bearer ")) {
             String token = authHeader.substring(7);
             
-            if (token.startsWith("Patient:")) {
-                String username = token.substring(8);
-                Patient p = new Patient.PatientBuilder(username, new byte[0], new byte[0]).build();
-                UserContext.setPatient(p);
-            } else if (token.startsWith("Caregiver:")) {
-                String username = token.substring(10);
-                Caregiver c = new Caregiver.CaregiverBuilder(username, new byte[0], new byte[0]).build();
-                UserContext.setCaregiver(c);
+            try {
+                DecodedJWT jwt = JwtUtil.verifyToken(token);
+                String username = jwt.getClaim("username").asString();
+                String role = jwt.getClaim("role").asString();
+                
+                if ("Patient".equals(role)) {
+                    Patient p = new Patient.PatientBuilder(username, new byte[0], new byte[0]).build();
+                    UserContext.setPatient(p);
+                } else if ("Caregiver".equals(role)) {
+                    Caregiver c = new Caregiver.CaregiverBuilder(username, new byte[0], new byte[0]).build();
+                    UserContext.setCaregiver(c);
+                }
+            } catch (JWTVerificationException e) {
+                // Invalid token, do not set user context
             }
         }
         return true;

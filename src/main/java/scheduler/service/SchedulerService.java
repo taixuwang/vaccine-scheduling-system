@@ -147,7 +147,7 @@ public class SchedulerService {
             throw new RuntimeException("Login patient failed");
         } else {
             UserContext.setPatient(patient);
-            return "Logged in as " + username;
+            return JwtUtil.generateToken(username, "Patient");
         }
     }
 
@@ -167,7 +167,7 @@ public class SchedulerService {
             throw new RuntimeException("Login failed.");
         } else {
             UserContext.setCaregiver(caregiver);
-            return "Logged in as: " + username;
+            return JwtUtil.generateToken(username, "Caregiver");
         }
     }
 
