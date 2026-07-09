@@ -4,19 +4,19 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 import scheduler.dto.ApiResponse;
 import scheduler.dto.AuthRequest;
-import scheduler.service.SchedulerService;
+import scheduler.service.AuthService;
 
 @RestController
 @RequestMapping("/api/auth")
 public class AuthController {
 
     @Autowired
-    private SchedulerService schedulerService;
+    private AuthService authService;
 
     @PostMapping("/create_patient")
     public ApiResponse<String> createPatient(@RequestBody AuthRequest request) {
         try {
-            String msg = schedulerService.createPatient(request.getUsername(), request.getPassword());
+            String msg = authService.createPatient(request.getUsername(), request.getPassword());
             return ApiResponse.success("Success", msg);
         } catch (Exception e) {
             return ApiResponse.error(e.getMessage());
@@ -26,7 +26,7 @@ public class AuthController {
     @PostMapping("/create_caregiver")
     public ApiResponse<String> createCaregiver(@RequestBody AuthRequest request) {
         try {
-            String msg = schedulerService.createCaregiver(request.getUsername(), request.getPassword());
+            String msg = authService.createCaregiver(request.getUsername(), request.getPassword());
             return ApiResponse.success("Success", msg);
         } catch (Exception e) {
             return ApiResponse.error(e.getMessage());
@@ -36,7 +36,7 @@ public class AuthController {
     @PostMapping("/login_patient")
     public ApiResponse<String> loginPatient(@RequestBody AuthRequest request) {
         try {
-            String msg = schedulerService.loginPatient(request.getUsername(), request.getPassword());
+            String msg = authService.loginPatient(request.getUsername(), request.getPassword());
             return ApiResponse.success("Success", msg);
         } catch (Exception e) {
             return ApiResponse.error(e.getMessage());
@@ -46,7 +46,7 @@ public class AuthController {
     @PostMapping("/login_caregiver")
     public ApiResponse<String> loginCaregiver(@RequestBody AuthRequest request) {
         try {
-            String msg = schedulerService.loginCaregiver(request.getUsername(), request.getPassword());
+            String msg = authService.loginCaregiver(request.getUsername(), request.getPassword());
             return ApiResponse.success("Success", msg);
         } catch (Exception e) {
             return ApiResponse.error(e.getMessage());
@@ -56,7 +56,7 @@ public class AuthController {
     @PostMapping("/logout")
     public ApiResponse<String> logout() {
         try {
-            String msg = schedulerService.logout();
+            String msg = authService.logout();
             return ApiResponse.success("Success", msg);
         } catch (Exception e) {
             return ApiResponse.error(e.getMessage());

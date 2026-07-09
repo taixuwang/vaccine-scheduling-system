@@ -5,7 +5,7 @@ import org.springframework.web.bind.annotation.*;
 import scheduler.dto.ApiResponse;
 import scheduler.dto.DateRequest;
 import scheduler.dto.ReserveRequest;
-import scheduler.service.SchedulerService;
+import scheduler.service.ReservationService;
 import java.util.List;
 
 @RestController
@@ -13,12 +13,12 @@ import java.util.List;
 public class ReservationController {
 
     @Autowired
-    private SchedulerService schedulerService;
+    private ReservationService reservationService;
 
     @PostMapping("/reserve")
     public ApiResponse<String> reserve(@RequestBody ReserveRequest request) {
         try {
-            String msg = schedulerService.reserve(request.getDate(), request.getVaccine());
+            String msg = reservationService.reserve(request.getDate(), request.getVaccine());
             return ApiResponse.success("Success", msg);
         } catch (Exception e) {
             return ApiResponse.error(e.getMessage());
@@ -28,7 +28,7 @@ public class ReservationController {
     @PostMapping("/cancel")
     public ApiResponse<String> cancel(@RequestParam String appointmentId) {
         try {
-            String msg = schedulerService.cancel(appointmentId);
+            String msg = reservationService.cancel(appointmentId);
             return ApiResponse.success("Success", msg);
         } catch (Exception e) {
             return ApiResponse.error(e.getMessage());
@@ -38,7 +38,7 @@ public class ReservationController {
     @PostMapping("/search_caregiver_schedule")
     public ApiResponse<List<String>> searchCaregiverSchedule(@RequestBody DateRequest request) {
         try {
-            List<String> result = schedulerService.searchCaregiverSchedule(request.getDate());
+            List<String> result = reservationService.searchCaregiverSchedule(request.getDate());
             return ApiResponse.success("Success", result);
         } catch (Exception e) {
             return ApiResponse.error(e.getMessage());
@@ -48,7 +48,7 @@ public class ReservationController {
     @GetMapping("/show_appointments")
     public ApiResponse<List<String>> showAppointments() {
         try {
-            List<String> result = schedulerService.showAppointments();
+            List<String> result = reservationService.showAppointments();
             return ApiResponse.success("Success", result);
         } catch (Exception e) {
             return ApiResponse.error(e.getMessage());
