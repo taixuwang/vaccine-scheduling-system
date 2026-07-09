@@ -95,7 +95,7 @@ public class ReservationService {
 
             try {
                 con.setAutoCommit(false);
-                String getCaregiver = "SELECT A.Username FROM Availabilities as A WHERE Time = ? ORDER BY A.Username FOR UPDATE";
+                String getCaregiver = "SELECT A.Username FROM Availabilities as A WHERE Time = ? ORDER BY A.Username LIMIT 1 FOR UPDATE SKIP LOCKED";
                 PreparedStatement caregiverStatement = con.prepareStatement(getCaregiver);
                 Date d = Date.valueOf(date);
                 caregiverStatement.setDate(1, d);

@@ -91,21 +91,21 @@ def test_concurrent_reservations(t, suffix, tokens, expected_successes):
         start = time.time()
         resp = reserve(token, TEST_DATE, TEST_VACCINE)
         elapsed = time.time() - start
-        return resp.status_code, resp.json(), elapsed
+        return resp.status_code, resp.json(), elapsed, token
 
     # Fire all requests concurrently
     start_time = time.time()
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(tokens)) as executor:
         futures = [executor.submit(attempt_reserve, tok) for tok in tokens]
         for f in concurrent.futures.as_completed(futures):
-            status, body, elapsed = f.result()
-            results.append((status, body))
+            status, body, elapsed, token = f.result()
+            results.append((status, body, token))
             latencies.append(elapsed)
     total_time = time.time() - start_time
 
     # Analyze results
-    successes = [(s, b) for s, b in results if s == 200]
-    failures = [(s, b) for s, b in results if s != 200]
+    successes = [(s, b, t) for s, b, t in results if s == 200]
+    failures = [(s, b, t) for s, b, t in results if s != 200]
 
     print(f"  Completed in {total_time:.2f}s")
     print(f"  Successes: {len(successes)}, Failures: {len(failures)}")
@@ -123,12 +123,14 @@ def test_concurrent_reservations(t, suffix, tokens, expected_successes):
     )
 
     # Check for unique appointment IDs
-    appointment_ids = []
-    for _, body in successes:
+    cancel_pairs = []
+    for _, body, token in successes:
         msg = body.get("data", "")
         match = re.search(r"Appointment ID (\d+)", msg)
         if match:
-            appointment_ids.append(match.group(1))
+            cancel_pairs.append((token, match.group(1)))
+            
+    appointment_ids = [aid for _, aid in cancel_pairs]
 
     unique_ids = set(appointment_ids)
     t.assert_eq(
@@ -138,7 +140,7 @@ def test_concurrent_reservations(t, suffix, tokens, expected_successes):
 
     # Check for unique caregiver assignments (no double-booking)
     caregivers_assigned = []
-    for _, body in successes:
+    for _, body, _ in successes:
         msg = body.get("data", "")
         match = re.search(r"Caregiver username (\S+)", msg)
         if match:
@@ -165,23 +167,19 @@ def test_concurrent_reservations(t, suffix, tokens, expected_successes):
     print(f"    P95 latency:   {p95*1000:.0f}ms")
     print(f"    P99 latency:   {p99*1000:.0f}ms")
 
-    return [aid for aid in appointment_ids]
+    return cancel_pairs
 
 
-def test_concurrent_cancellations(t, suffix, tokens, appointment_ids):
+def test_concurrent_cancellations(t, suffix, cancel_pairs):
     """
     Cancel all successful reservations concurrently.
     Validates that all cancellations succeed without errors.
     """
-    if not appointment_ids:
+    if not cancel_pairs:
         print("\n--- Concurrent Cancellations: SKIPPED (no appointments) ---")
         return
 
-    print(f"\n--- Concurrent Cancellations: {len(appointment_ids)} appointments ---")
-
-    # Use the tokens from patients who got appointments
-    # We'll use the first N tokens for cancellation (they match the patients who reserved)
-    cancel_pairs = list(zip(tokens[:len(appointment_ids)], appointment_ids))
+    print(f"\n--- Concurrent Cancellations: {len(cancel_pairs)} appointments ---")
 
     results = []
 
@@ -200,7 +198,7 @@ def test_concurrent_cancellations(t, suffix, tokens, appointment_ids):
 
     t.assert_eq(
         "All cancellations succeed",
-        len(successes), len(appointment_ids)
+        len(successes), len(cancel_pairs)
     )
 
     if failures:
@@ -208,7 +206,7 @@ def test_concurrent_cancellations(t, suffix, tokens, appointment_ids):
             print(f"    Cancel failure: HTTP {status}, {body}")
 
 
-def test_no_race_after_cancel_and_rebook(t, suffix, tokens, num_doses, num_caregivers):
+def test_no_race_after_cancel_and_rebook(t, suffix, cancel_pairs, num_doses, num_caregivers):
     """
     After cancelling all appointments, re-add availability and try booking again.
     This tests that cancelled doses are properly restored.
@@ -224,7 +222,7 @@ def test_no_race_after_cancel_and_rebook(t, suffix, tokens, num_doses, num_careg
         logout(cg_token)
 
     # Try to reserve with first patient
-    resp = reserve(tokens[0], rebooking_date, TEST_VACCINE)
+    resp = reserve(cancel_pairs[0][0] if cancel_pairs else None, rebooking_date, TEST_VACCINE)
     t.assert_status(
         "Re-booking after cancellation succeeds (doses were restored)",
         resp, 200
@@ -256,9 +254,9 @@ if __name__ == "__main__":
 
     try:
         tokens = setup_concurrent_test(suffix, args.patients, args.doses, args.caregivers)
-        appointment_ids = test_concurrent_reservations(t, suffix, tokens, args.doses)
-        test_concurrent_cancellations(t, suffix, tokens, appointment_ids)
-        test_no_race_after_cancel_and_rebook(t, suffix, tokens, args.doses, args.caregivers)
+        cancel_pairs = test_concurrent_reservations(t, suffix, tokens, args.doses)
+        test_concurrent_cancellations(t, suffix, cancel_pairs)
+        test_no_race_after_cancel_and_rebook(t, suffix, cancel_pairs, args.doses, args.caregivers)
     except requests.exceptions.ConnectionError:
         print(f"\n[ERROR] Cannot connect to {BASE_URL}. Is the application running?")
         sys.exit(1)
