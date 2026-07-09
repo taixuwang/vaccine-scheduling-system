@@ -7,7 +7,7 @@ RUN mvn dependency:go-offline
 COPY src ./src
 RUN mvn clean package -DskipTests
 
-FROM openjdk:11-jre-slim
+FROM eclipse-temurin:11-jre-focal
 WORKDIR /app
 COPY --from=build /app/target/vaccine-scheduler-1.0-SNAPSHOT.jar app.jar
 EXPOSE 8080
