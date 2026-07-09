@@ -32,3 +32,15 @@ hs_err_pid*
 *.iml
 out/
 target/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
+
+# OS Files
+.DS_Store
+Thumbs.db
