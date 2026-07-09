@@ -101,12 +101,20 @@ public class ReservationService {
                 caregiverStatement.setDate(1, d);
                 ResultSet caregiverResult = caregiverStatement.executeQuery();
                 if (caregiverResult.next()) {
-                    VaccineGetter getVaccine = new VaccineGetter(vaccineName);
-                    Vaccine currentVaccine = getVaccine.get();
-                    if (currentVaccine == null || currentVaccine.getAvailableDoses() == 0) {
+                    // Use the existing connection to fetch the vaccine to avoid connection pool starvation!
+                    String getVaccineQuery = "SELECT Doses FROM Vaccines WHERE Name = ?";
+                    PreparedStatement vaccineStatement = con.prepareStatement(getVaccineQuery);
+                    vaccineStatement.setString(1, vaccineName);
+                    ResultSet vaccineResult = vaccineStatement.executeQuery();
+                    
+                    if (!vaccineResult.next() || vaccineResult.getInt("Doses") == 0) {
+                        vaccineResult.close();
+                        vaccineStatement.close();
                         con.rollback();
                         throw new RuntimeException("Not enough available doses"); // Revert will happen in finally
                     }
+                    vaccineResult.close();
+                    vaccineStatement.close();
                     String assignedCaregiver = caregiverResult.getString("Username");
                     caregiverResult.close();
                     caregiverStatement.close();

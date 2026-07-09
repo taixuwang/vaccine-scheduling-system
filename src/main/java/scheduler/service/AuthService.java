@@ -10,6 +10,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Arrays;
 
 @Service
 public class AuthService {
@@ -45,38 +46,33 @@ public class AuthService {
             throw new RuntimeException("Create patient failed, please use a strong password");
         }
 
-        try {
-            if (usernameExistsPatient(username)) {
-                throw new RuntimeException("Username taken, try again");
-            }
-        } catch (SQLException e) {
-            throw new RuntimeException("Create patient failed");
-        }
-
         byte[] salt = Util.generateSalt();
         byte[] hash = Util.generateHash(password, salt);
 
+        ConnectionManager cm = new ConnectionManager();
+        Connection con = cm.createConnection();
         try {
-            Patient patient = new Patient.PatientBuilder(username, salt, hash).build();
-            patient.saveToDB();
+            String selectUsername = "SELECT Username FROM Patients WHERE Username = ?";
+            PreparedStatement checkStmt = con.prepareStatement(selectUsername);
+            checkStmt.setString(1, username);
+            ResultSet rs = checkStmt.executeQuery();
+            if (rs.next()) {
+                throw new RuntimeException("Username taken, try again");
+            }
+            rs.close();
+            checkStmt.close();
+
+            String addPatient = "INSERT INTO Patients VALUES (?, ?, ?)";
+            PreparedStatement insertStmt = con.prepareStatement(addPatient);
+            insertStmt.setString(1, username);
+            insertStmt.setBytes(2, salt);
+            insertStmt.setBytes(3, hash);
+            insertStmt.executeUpdate();
+            insertStmt.close();
+            
             return "Created user " + username;
         } catch (SQLException e) {
             throw new RuntimeException("Create patient failed");
-        }
-    }
-
-    private static boolean usernameExistsPatient(String username) throws SQLException {
-        ConnectionManager cm = new ConnectionManager();
-        Connection con = cm.createConnection();
-
-        String selectUsername = "SELECT * FROM Patients WHERE Username = ?";
-        try {
-            PreparedStatement statement = con.prepareStatement(selectUsername);
-            statement.setString(1, username);
-            ResultSet resultSet = statement.executeQuery();
-            return resultSet.isBeforeFirst();
-        } catch (SQLException e) {
-            throw new SQLException();
         } finally {
             cm.closeConnection();
         }
@@ -86,34 +82,34 @@ public class AuthService {
         if (!checkPassword(password)) {
             throw new RuntimeException("Create caregiver failed, please use a strong password");
         }
-        if (usernameExistsCaregiver(username)) {
-            throw new RuntimeException("Username taken, try again!");
-        }
         
         byte[] salt = Util.generateSalt();
         byte[] hash = Util.generateHash(password, salt);
         
+        ConnectionManager cm = new ConnectionManager();
+        Connection con = cm.createConnection();
         try {
-            Caregiver caregiver = new Caregiver.CaregiverBuilder(username, salt, hash).build(); 
-            caregiver.saveToDB();
+            String selectUsername = "SELECT Username FROM Caregivers WHERE Username = ?";
+            PreparedStatement checkStmt = con.prepareStatement(selectUsername);
+            checkStmt.setString(1, username);
+            ResultSet rs = checkStmt.executeQuery();
+            if (rs.next()) {
+                throw new RuntimeException("Username taken, try again!");
+            }
+            rs.close();
+            checkStmt.close();
+
+            String addCaregiver = "INSERT INTO Caregivers VALUES (?, ?, ?)";
+            PreparedStatement insertStmt = con.prepareStatement(addCaregiver);
+            insertStmt.setString(1, username);
+            insertStmt.setBytes(2, salt);
+            insertStmt.setBytes(3, hash);
+            insertStmt.executeUpdate();
+            insertStmt.close();
+
             return "Created user " + username;
         } catch (SQLException e) {
             throw new RuntimeException("Failed to create user.");
-        }
-    }
-
-    private static boolean usernameExistsCaregiver(String username) {
-        ConnectionManager cm = new ConnectionManager();
-        Connection con = cm.createConnection();
-
-        String selectUsername = "SELECT * FROM Caregivers WHERE Username = ?";
-        try {
-            PreparedStatement statement = con.prepareStatement(selectUsername);
-            statement.setString(1, username);
-            ResultSet resultSet = statement.executeQuery();
-            return resultSet.isBeforeFirst();
-        } catch (SQLException e) {
-            throw new RuntimeException("Error occurred when checking username");
         } finally {
             cm.closeConnection();
         }
@@ -124,26 +120,33 @@ public class AuthService {
             throw new RuntimeException("User already logged in, try again");
         }
 
+        ConnectionManager cm = new ConnectionManager();
+        Connection con = cm.createConnection();
         try {
-            if (!usernameExistsPatient(username)) {
+            String getPatient = "SELECT Salt, Hash FROM Patients WHERE Username = ?";
+            PreparedStatement statement = con.prepareStatement(getPatient);
+            statement.setString(1, username);
+            ResultSet resultSet = statement.executeQuery();
+            
+            if (resultSet.next()) {
+                byte[] salt = resultSet.getBytes("Salt");
+                byte[] hash = Util.trim(resultSet.getBytes("Hash"));
+                byte[] calculatedHash = Util.generateHash(password, salt);
+                
+                if (!Arrays.equals(hash, calculatedHash)) {
+                    throw new RuntimeException("Login patient failed");
+                } else {
+                    Patient patient = new Patient.PatientBuilder(username, salt, hash).build();
+                    UserContext.setPatient(patient);
+                    return JwtUtil.generateToken(username, "Patient");
+                }
+            } else {
                 throw new RuntimeException("Login patient failed");
             }
         } catch (SQLException e) {
             throw new RuntimeException("Login patient failed");
-        }
-
-        Patient patient = null;
-        try {
-            patient = new Patient.PatientGetter(username, password).get();
-        } catch (SQLException e) {
-            throw new RuntimeException("Login patient failed");
-        }
-
-        if (patient == null) {
-            throw new RuntimeException("Login patient failed");
-        } else {
-            UserContext.setPatient(patient);
-            return JwtUtil.generateToken(username, "Patient");
+        } finally {
+            cm.closeConnection();
         }
     }
 
@@ -152,18 +155,33 @@ public class AuthService {
             throw new RuntimeException("User already logged in.");
         }
 
-        Caregiver caregiver = null;
+        ConnectionManager cm = new ConnectionManager();
+        Connection con = cm.createConnection();
         try {
-            caregiver = new Caregiver.CaregiverGetter(username, password).get();
+            String getCaregiver = "SELECT Salt, Hash FROM Caregivers WHERE Username = ?";
+            PreparedStatement statement = con.prepareStatement(getCaregiver);
+            statement.setString(1, username);
+            ResultSet resultSet = statement.executeQuery();
+            
+            if (resultSet.next()) {
+                byte[] salt = resultSet.getBytes("Salt");
+                byte[] hash = Util.trim(resultSet.getBytes("Hash"));
+                byte[] calculatedHash = Util.generateHash(password, salt);
+                
+                if (!Arrays.equals(hash, calculatedHash)) {
+                    throw new RuntimeException("Login failed.");
+                } else {
+                    Caregiver caregiver = new Caregiver.CaregiverBuilder(username, salt, hash).build();
+                    UserContext.setCaregiver(caregiver);
+                    return JwtUtil.generateToken(username, "Caregiver");
+                }
+            } else {
+                throw new RuntimeException("Login failed.");
+            }
         } catch (SQLException e) {
             throw new RuntimeException("Login failed.");
-        }
-        
-        if (caregiver == null) {
-            throw new RuntimeException("Login failed.");
-        } else {
-            UserContext.setCaregiver(caregiver);
-            return JwtUtil.generateToken(username, "Caregiver");
+        } finally {
+            cm.closeConnection();
         }
     }
 
