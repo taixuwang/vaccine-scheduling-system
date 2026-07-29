@@ -51,19 +51,6 @@
             <artifactId>commons-pool2</artifactId>
         </dependency>
 
-        <!-- Gson -->
-        <dependency>
-            <groupId>com.google.code.gson</groupId>
-            <artifactId>gson</artifactId>
-        </dependency>
-
-        <!-- JSON in Java -->
-        <dependency>
-            <groupId>org.json</groupId>
-            <artifactId>json</artifactId>
-            <version>20231013</version>
-        </dependency>
-
         <!-- Java JWT -->
         <dependency>
             <groupId>com.auth0</groupId>
