@@ -2,7 +2,7 @@ services:
   # --- Local Docker PostgreSQL (added for local testing) ---
   postgres:
     image: postgres:15
-    command: postgres -c max_connections=600
+    command: postgres -c max_connections=300
     environment:
       POSTGRES_PASSWORD: password
       POSTGRES_DB: scheduler_db
@@ -33,7 +33,7 @@ services:
       - Password=password
       - RedisEndpoint=redis
       - JwtSecret=${JWT_SECRET:-change_me_in_production}
-      - SERVER_TOMCAT_THREADS_MAX=2000
+      - SERVER_TOMCAT_THREADS_MAX=600
     depends_on:
       - postgres
       - redis
@@ -54,7 +54,7 @@ services:
       - Password=password
       - RedisEndpoint=redis
       - JwtSecret=${JWT_SECRET:-change_me_in_production}
-      - SERVER_TOMCAT_THREADS_MAX=2000
+      - SERVER_TOMCAT_THREADS_MAX=600
     depends_on:
       - postgres
       - redis
@@ -75,7 +75,7 @@ services:
       - Password=password
       - RedisEndpoint=redis
       - JwtSecret=${JWT_SECRET:-change_me_in_production}
-      - SERVER_TOMCAT_THREADS_MAX=2000
+      - SERVER_TOMCAT_THREADS_MAX=600
     depends_on:
       - postgres
       - redis

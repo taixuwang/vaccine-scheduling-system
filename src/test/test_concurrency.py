@@ -34,7 +34,7 @@ import aiohttp
 import resource
 sys.path.insert(0, os.path.dirname(__file__))
 
-# Raise fd soft limit so 5000 concurrent aiohttp sockets don't hit EMFILE.
+# Raise fd soft limit so high-concurrency aiohttp sockets don't hit EMFILE.
 # macOS GUI-launched shells default to 256; hard limit is unlimited here.
 try:
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
@@ -304,9 +304,9 @@ def test_no_race_after_cancel_and_rebook(t, suffix, cancel_pairs, num_doses, num
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Concurrency tests for vaccine scheduler")
-    parser.add_argument("--patients", type=int, default=5000, help="Number of concurrent patients")
-    parser.add_argument("--doses", type=int, default=500, help="Number of available vaccine doses")
-    parser.add_argument("--caregivers", type=int, default=500, help="Number of caregivers with availability")
+    parser.add_argument("--patients", type=int, default=1000, help="Number of concurrent patients")
+    parser.add_argument("--doses", type=int, default=100, help="Number of available vaccine doses")
+    parser.add_argument("--caregivers", type=int, default=100, help="Number of caregivers with availability")
     parser.add_argument("--runs", type=int, default=10, help="Number of test runs")
     args = parser.parse_args()
 

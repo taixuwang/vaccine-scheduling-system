@@ -9,8 +9,9 @@ public class RedisManager {
 
     static {
         JedisPoolConfig poolConfig = new JedisPoolConfig();
-        poolConfig.setMaxTotal(2000); // Align with Tomcat threads; 5000 concurrent need enough Jedis conns
-        poolConfig.setMaxIdle(500);  // Maximum idle connections
+        // Sized for 1000 concurrent requests / 3 nodes (~333 req/node), each doing 1-2 fast Redis ops.
+        poolConfig.setMaxTotal(400); // Enough to avoid Jedis pool contention without wasting memory
+        poolConfig.setMaxIdle(300);  // Keep most connections warm for reuse
         poolConfig.setMinIdle(50);  // Minimum idle connections
         poolConfig.setTestOnBorrow(false); // Skip validation for speed (Redis is local, stable)
         

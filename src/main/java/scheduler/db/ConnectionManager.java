@@ -21,8 +21,9 @@ public class ConnectionManager {
         config.setUsername(user);
         config.setPassword(password);
 
-        // Connection pool optimization settings
-        config.setMaximumPoolSize(170);
+        // Connection pool optimization settings for 1000 concurrent requests / 100 doses / 3 nodes
+        // Peak DB concurrency is capped by available doses (~100), so ~33 active connections/node is enough.
+        config.setMaximumPoolSize(80);
         config.setMinimumIdle(10);
         config.setIdleTimeout(30000);
         config.setConnectionTimeout(30000);
