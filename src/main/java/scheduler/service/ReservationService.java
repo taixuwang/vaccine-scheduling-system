@@ -72,16 +72,41 @@ public class ReservationService {
             throw new RuntimeException("Please login first");
         }
 
-        // 1. Redis Cache Interception
+        // 1. Redis Cache Interception (atomic claim when Redis is up)
         String redisKey = "vaccine:" + vaccineName + ":doses";
         long currentStock = -1;
+        boolean redisDown = false;
         try (redis.clients.jedis.Jedis jedis = scheduler.db.RedisManager.getJedis()) {
             currentStock = jedis.decr(redisKey);
         } catch (Exception e) {
-            currentStock = 1; // Fallback to DB if Redis is down
+            redisDown = true;
         }
 
-        if (currentStock < 0) {
+        if (redisDown) {
+            // Redis is down: fall back to a DB stock check. This is only an early
+            // bail-out; the atomic conditional UPDATE later in the transaction is
+            // the real guard against oversell.
+            ConnectionManager fallbackCm = new ConnectionManager();
+            Connection fallbackCon = fallbackCm.createConnection();
+            try {
+                String checkDoses = "SELECT Doses FROM Vaccines WHERE Name = ?";
+                PreparedStatement ps = fallbackCon.prepareStatement(checkDoses);
+                ps.setString(1, vaccineName);
+                ResultSet rs = ps.executeQuery();
+                if (!rs.next() || rs.getInt("Doses") <= 0) {
+                    rs.close();
+                    ps.close();
+                    throw new RuntimeException("Not enough available doses");
+                }
+                rs.close();
+                ps.close();
+                currentStock = 1; // pass the guard below; the real claim happens in the conditional UPDATE
+            } catch (SQLException sqlEx) {
+                throw new RuntimeException("Please try again");
+            } finally {
+                fallbackCm.closeConnection();
+            }
+        } else if (currentStock < 0) {
             try (redis.clients.jedis.Jedis jedis = scheduler.db.RedisManager.getJedis()) {
                 jedis.incr(redisKey); // Revert the negative count
             } catch (Exception e) {}
@@ -101,20 +126,6 @@ public class ReservationService {
                 caregiverStatement.setDate(1, d);
                 ResultSet caregiverResult = caregiverStatement.executeQuery();
                 if (caregiverResult.next()) {
-                    // Use the existing connection to fetch the vaccine to avoid connection pool starvation!
-                    String getVaccineQuery = "SELECT Doses FROM Vaccines WHERE Name = ?";
-                    PreparedStatement vaccineStatement = con.prepareStatement(getVaccineQuery);
-                    vaccineStatement.setString(1, vaccineName);
-                    ResultSet vaccineResult = vaccineStatement.executeQuery();
-                    
-                    if (!vaccineResult.next() || vaccineResult.getInt("Doses") == 0) {
-                        vaccineResult.close();
-                        vaccineStatement.close();
-                        con.rollback();
-                        throw new RuntimeException("Not enough available doses"); // Revert will happen in finally
-                    }
-                    vaccineResult.close();
-                    vaccineStatement.close();
                     String assignedCaregiver = caregiverResult.getString("Username");
                     caregiverResult.close();
                     caregiverStatement.close();
@@ -141,10 +152,14 @@ public class ReservationService {
                         removeStatement.setString(2, assignedCaregiver);
                         removeStatement.executeUpdate();
 
-                        String updateVaccine = "UPDATE vaccines SET Doses = Doses - 1 WHERE name = ?";
+                        String updateVaccine = "UPDATE vaccines SET Doses = Doses - 1 WHERE name = ? AND Doses > 0";
                         PreparedStatement updateVaccineStatement = con.prepareStatement(updateVaccine);
                         updateVaccineStatement.setString(1, vaccineName);
-                        updateVaccineStatement.executeUpdate();
+                        int affected = updateVaccineStatement.executeUpdate();
+                        if (affected == 0) {
+                            con.rollback();
+                            throw new RuntimeException("Not enough available doses"); // Revert will happen in finally
+                        }
 
                         con.commit();
                         reserveSuccess = true; // Mark as success!
@@ -167,8 +182,8 @@ public class ReservationService {
                 cm.closeConnection();
             }
         } finally {
-            if (!reserveSuccess) {
-                // If anything failed, return the dose to Redis
+            if (!reserveSuccess && !redisDown) {
+                // If anything failed, return the dose to Redis (only if we actually claimed one)
                 try (redis.clients.jedis.Jedis jedis = scheduler.db.RedisManager.getJedis()) {
                     jedis.incr(redisKey);
                 } catch (Exception e) {}
@@ -192,7 +207,8 @@ public class ReservationService {
         Connection con = cm.createConnection();
 
         try {
-            String getAppointment = "SELECT R.Appointment_id, R.Patient_name, R.Caregiver_name, R.Vaccine_name, R.Time FROM Reservations as R WHERE R.Appointment_id = ?";
+            con.setAutoCommit(false);
+            String getAppointment = "SELECT R.Appointment_id, R.Patient_name, R.Caregiver_name, R.Vaccine_name, R.Time FROM Reservations as R WHERE R.Appointment_id = ? FOR UPDATE";
             PreparedStatement statement = con.prepareStatement(getAppointment);
             statement.setInt(1, appId);
             ResultSet result = statement.executeQuery();
@@ -212,9 +228,6 @@ public class ReservationService {
                     throw new RuntimeException("Please try again");
                 }
 
-                // We no longer need VaccineGetter since we do an atomic increment directly
-
-                con.setAutoCommit(false);
                 try {
                     String deleteReservation = "DELETE FROM Reservations as R WHERE R.Appointment_id = ?";
                     PreparedStatement deleteStatement = con.prepareStatement(deleteReservation);
@@ -246,8 +259,6 @@ public class ReservationService {
                 } catch (SQLException e) {
                     con.rollback();
                     throw e;
-                } finally {
-                    con.setAutoCommit(true);
                 }
             } else {
                 throw new RuntimeException("Appointment ID " + appointmentId + " does not exist");
