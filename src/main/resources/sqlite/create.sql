@@ -23,6 +23,8 @@ CREATE TABLE VaccineDoses (
     FOREIGN KEY (Vaccine_name) REFERENCES Vaccines(Name)
 );
 
+CREATE INDEX idx_vaccine_doses_vaccine_status ON VaccineDoses(Vaccine_name, Status);
+
 CREATE TABLE Patients (
     Username varchar(255),
     Salt BINARY(16),

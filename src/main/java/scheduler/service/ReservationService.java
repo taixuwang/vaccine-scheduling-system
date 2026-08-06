@@ -122,8 +122,8 @@ public class ReservationService {
                 con.setAutoCommit(false);
                 Date d = Date.valueOf(date);
 
-                // 1. Claim a vaccine dose (SKIP LOCKED - no contention with other transactions)
-                String getDose = "SELECT Dose_id FROM VaccineDoses WHERE Vaccine_name = ? AND Status = 'available' LIMIT 1 FOR UPDATE SKIP LOCKED";
+                // 1. Claim a vaccine dose and mark it reserved in one statement
+                String getDose = "WITH dose AS (SELECT Dose_id FROM VaccineDoses WHERE Vaccine_name = ? AND Status = 'available' LIMIT 1 FOR UPDATE SKIP LOCKED) UPDATE VaccineDoses d SET Status = 'reserved' FROM dose WHERE d.Dose_id = dose.Dose_id RETURNING d.Dose_id";
                 PreparedStatement doseStatement = con.prepareStatement(getDose);
                 doseStatement.setString(1, vaccineName);
                 ResultSet doseResult = doseStatement.executeQuery();
@@ -137,55 +137,44 @@ public class ReservationService {
                 doseResult.close();
                 doseStatement.close();
 
-                // 2. Select caregiver (SKIP LOCKED - same as before)
-                String getCaregiver = "SELECT A.Username FROM Availabilities as A WHERE Time = ? ORDER BY A.Username LIMIT 1 FOR UPDATE SKIP LOCKED";
+                // 2. Select caregiver and remove availability in one statement
+                String getCaregiver = "WITH avail AS (SELECT Time, Username FROM Availabilities WHERE Time = ? ORDER BY Username LIMIT 1 FOR UPDATE SKIP LOCKED) DELETE FROM Availabilities a USING avail WHERE a.Time = avail.Time AND a.Username = avail.Username RETURNING a.Username";
                 PreparedStatement caregiverStatement = con.prepareStatement(getCaregiver);
                 caregiverStatement.setDate(1, d);
                 ResultSet caregiverResult = caregiverStatement.executeQuery();
-                if (caregiverResult.next()) {
-                    String assignedCaregiver = caregiverResult.getString("Username");
+                if (!caregiverResult.next()) {
                     caregiverResult.close();
                     caregiverStatement.close();
-
-                    try {
-                        String addReservations = "INSERT INTO Reservations (Patient_name, Caregiver_name, Vaccine_name, Dose_id, Time) VALUES (?, ?, ?, ?, ?)";
-                        PreparedStatement addStatement = con.prepareStatement(addReservations, java.sql.Statement.RETURN_GENERATED_KEYS);
-                        addStatement.setString(1, UserContext.getPatient().getUsername());
-                        addStatement.setString(2, assignedCaregiver);
-                        addStatement.setString(3, vaccineName);
-                        addStatement.setInt(4, doseId);
-                        addStatement.setDate(5, d);
-                        addStatement.executeUpdate();
-
-                        ResultSet generatedKeys = addStatement.getGeneratedKeys();
-                        int currentId = 0;
-                        if (generatedKeys.next()) {
-                            currentId = generatedKeys.getInt(1);
-                        }
-                        String resMsg = "Appointment ID "+ currentId + ", Caregiver username " + assignedCaregiver;
-
-                        String removeAvailability = "DELETE FROM Availabilities as A WHERE A.Time = ? AND A.Username = ?";
-                        PreparedStatement removeStatement = con.prepareStatement(removeAvailability);
-                        removeStatement.setDate(1, d);
-                        removeStatement.setString(2, assignedCaregiver);
-                        removeStatement.executeUpdate();
-
-                        // Mark dose as reserved (replaces UPDATE vaccines SET Doses = Doses - 1)
-                        String claimDose = "UPDATE VaccineDoses SET Status = 'reserved' WHERE Dose_id = ?";
-                        PreparedStatement claimStmt = con.prepareStatement(claimDose);
-                        claimStmt.setInt(1, doseId);
-                        claimStmt.executeUpdate();
-
-                        con.commit();
-                        reserveSuccess = true; // Mark as success!
-                        return resMsg;
-                    } catch (SQLException e) {
-                        con.rollback();
-                        throw e;
-                    }
-                } else {
                     con.rollback();
                     throw new RuntimeException("No caregiver is available");
+                }
+                String assignedCaregiver = caregiverResult.getString("Username");
+                caregiverResult.close();
+                caregiverStatement.close();
+
+                try {
+                    String addReservations = "INSERT INTO Reservations (Patient_name, Caregiver_name, Vaccine_name, Dose_id, Time) VALUES (?, ?, ?, ?, ?)";
+                    PreparedStatement addStatement = con.prepareStatement(addReservations, java.sql.Statement.RETURN_GENERATED_KEYS);
+                    addStatement.setString(1, UserContext.getPatient().getUsername());
+                    addStatement.setString(2, assignedCaregiver);
+                    addStatement.setString(3, vaccineName);
+                    addStatement.setInt(4, doseId);
+                    addStatement.setDate(5, d);
+                    addStatement.executeUpdate();
+
+                    ResultSet generatedKeys = addStatement.getGeneratedKeys();
+                    int currentId = 0;
+                    if (generatedKeys.next()) {
+                        currentId = generatedKeys.getInt(1);
+                    }
+                    String resMsg = "Appointment ID "+ currentId + ", Caregiver username " + assignedCaregiver;
+
+                    con.commit();
+                    reserveSuccess = true; // Mark as success!
+                    return resMsg;
+                } catch (SQLException e) {
+                    con.rollback();
+                    throw e;
                 }
             } catch (IllegalArgumentException e) {
                 throw new RuntimeException("Please try again");
