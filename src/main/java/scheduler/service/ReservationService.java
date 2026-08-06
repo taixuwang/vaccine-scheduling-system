@@ -41,7 +41,7 @@ public class ReservationService {
             if (!hasCaregivers) {
                 res.add("No caregivers available");
             }
-            String getVaccine = "SELECT V.Name, V.Doses FROM Vaccines as V WHERE V.Doses > 0";
+            String getVaccine = "SELECT V.Name, COUNT(D.Dose_id) as Doses FROM Vaccines as V JOIN VaccineDoses as D ON V.Name = D.Vaccine_name WHERE D.Status = 'available' GROUP BY V.Name";
             PreparedStatement vaccineStatement = con.prepareStatement(getVaccine);
             ResultSet vaccineResult = vaccineStatement.executeQuery();
             res.add("Vaccines:");
@@ -84,23 +84,23 @@ public class ReservationService {
 
         if (redisDown) {
             // Redis is down: fall back to a DB stock check. This is only an early
-            // bail-out; the atomic conditional UPDATE later in the transaction is
+            // bail-out; the SKIP LOCKED claim later in the transaction is
             // the real guard against oversell.
             ConnectionManager fallbackCm = new ConnectionManager();
             Connection fallbackCon = fallbackCm.createConnection();
             try {
-                String checkDoses = "SELECT Doses FROM Vaccines WHERE Name = ?";
+                String checkDoses = "SELECT COUNT(*) as cnt FROM VaccineDoses WHERE Vaccine_name = ? AND Status = 'available'";
                 PreparedStatement ps = fallbackCon.prepareStatement(checkDoses);
                 ps.setString(1, vaccineName);
                 ResultSet rs = ps.executeQuery();
-                if (!rs.next() || rs.getInt("Doses") <= 0) {
+                if (!rs.next() || rs.getInt("cnt") <= 0) {
                     rs.close();
                     ps.close();
                     throw new RuntimeException("Not enough available doses");
                 }
                 rs.close();
                 ps.close();
-                currentStock = 1; // pass the guard below; the real claim happens in the conditional UPDATE
+                currentStock = 1; // pass the guard below; the real claim happens via SKIP LOCKED
             } catch (SQLException sqlEx) {
                 throw new RuntimeException("Please try again");
             } finally {
@@ -120,9 +120,26 @@ public class ReservationService {
 
             try {
                 con.setAutoCommit(false);
+                Date d = Date.valueOf(date);
+
+                // 1. Claim a vaccine dose (SKIP LOCKED - no contention with other transactions)
+                String getDose = "SELECT Dose_id FROM VaccineDoses WHERE Vaccine_name = ? AND Status = 'available' LIMIT 1 FOR UPDATE SKIP LOCKED";
+                PreparedStatement doseStatement = con.prepareStatement(getDose);
+                doseStatement.setString(1, vaccineName);
+                ResultSet doseResult = doseStatement.executeQuery();
+                if (!doseResult.next()) {
+                    doseResult.close();
+                    doseStatement.close();
+                    con.rollback();
+                    throw new RuntimeException("Not enough available doses");
+                }
+                int doseId = doseResult.getInt("Dose_id");
+                doseResult.close();
+                doseStatement.close();
+
+                // 2. Select caregiver (SKIP LOCKED - same as before)
                 String getCaregiver = "SELECT A.Username FROM Availabilities as A WHERE Time = ? ORDER BY A.Username LIMIT 1 FOR UPDATE SKIP LOCKED";
                 PreparedStatement caregiverStatement = con.prepareStatement(getCaregiver);
-                Date d = Date.valueOf(date);
                 caregiverStatement.setDate(1, d);
                 ResultSet caregiverResult = caregiverStatement.executeQuery();
                 if (caregiverResult.next()) {
@@ -131,12 +148,13 @@ public class ReservationService {
                     caregiverStatement.close();
 
                     try {
-                        String addReservations = "INSERT INTO Reservations (Patient_name, Caregiver_name, Vaccine_name, Time) VALUES (?, ?, ?, ?)";
+                        String addReservations = "INSERT INTO Reservations (Patient_name, Caregiver_name, Vaccine_name, Dose_id, Time) VALUES (?, ?, ?, ?, ?)";
                         PreparedStatement addStatement = con.prepareStatement(addReservations, java.sql.Statement.RETURN_GENERATED_KEYS);
                         addStatement.setString(1, UserContext.getPatient().getUsername());
                         addStatement.setString(2, assignedCaregiver);
                         addStatement.setString(3, vaccineName);
-                        addStatement.setDate(4, d);
+                        addStatement.setInt(4, doseId);
+                        addStatement.setDate(5, d);
                         addStatement.executeUpdate();
 
                         ResultSet generatedKeys = addStatement.getGeneratedKeys();
@@ -152,14 +170,11 @@ public class ReservationService {
                         removeStatement.setString(2, assignedCaregiver);
                         removeStatement.executeUpdate();
 
-                        String updateVaccine = "UPDATE vaccines SET Doses = Doses - 1 WHERE name = ? AND Doses > 0";
-                        PreparedStatement updateVaccineStatement = con.prepareStatement(updateVaccine);
-                        updateVaccineStatement.setString(1, vaccineName);
-                        int affected = updateVaccineStatement.executeUpdate();
-                        if (affected == 0) {
-                            con.rollback();
-                            throw new RuntimeException("Not enough available doses"); // Revert will happen in finally
-                        }
+                        // Mark dose as reserved (replaces UPDATE vaccines SET Doses = Doses - 1)
+                        String claimDose = "UPDATE VaccineDoses SET Status = 'reserved' WHERE Dose_id = ?";
+                        PreparedStatement claimStmt = con.prepareStatement(claimDose);
+                        claimStmt.setInt(1, doseId);
+                        claimStmt.executeUpdate();
 
                         con.commit();
                         reserveSuccess = true; // Mark as success!
@@ -208,7 +223,7 @@ public class ReservationService {
 
         try {
             con.setAutoCommit(false);
-            String getAppointment = "SELECT R.Appointment_id, R.Patient_name, R.Caregiver_name, R.Vaccine_name, R.Time FROM Reservations as R WHERE R.Appointment_id = ? FOR UPDATE";
+            String getAppointment = "SELECT R.Appointment_id, R.Patient_name, R.Caregiver_name, R.Vaccine_name, R.Dose_id, R.Time FROM Reservations as R WHERE R.Appointment_id = ? FOR UPDATE";
             PreparedStatement statement = con.prepareStatement(getAppointment);
             statement.setInt(1, appId);
             ResultSet result = statement.executeQuery();
@@ -216,6 +231,7 @@ public class ReservationService {
                 String patientName = result.getString("Patient_name");
                 String caregiverName = result.getString("Caregiver_name");
                 String vaccineName = result.getString("Vaccine_name");
+                int doseId = result.getInt("Dose_id");
                 Date time = result.getDate("Time");
                 
                 result.close();
@@ -234,10 +250,11 @@ public class ReservationService {
                     deleteStatement.setInt(1, appId);
                     deleteStatement.executeUpdate();
                     
-                    String updateVaccine = "UPDATE vaccines SET Doses = Doses + 1 WHERE name = ?";
-                    PreparedStatement updateVaccineStatement = con.prepareStatement(updateVaccine);
-                    updateVaccineStatement.setString(1, vaccineName);
-                    updateVaccineStatement.executeUpdate();
+                    // Restore the specific dose to available (replaces UPDATE vaccines SET Doses = Doses + 1)
+                    String restoreDose = "UPDATE VaccineDoses SET Status = 'available' WHERE Dose_id = ?";
+                    PreparedStatement restoreStmt = con.prepareStatement(restoreDose);
+                    restoreStmt.setInt(1, doseId);
+                    restoreStmt.executeUpdate();
                     
                     String addAvailability = "INSERT INTO Availabilities VALUES (?, ?)";
                     PreparedStatement addStatement = con.prepareStatement(addAvailability);

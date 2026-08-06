@@ -28,13 +28,57 @@ import os
 import re
 import time
 import argparse
-import concurrent.futures
+import subprocess
+import asyncio
+import aiohttp
+import resource
 sys.path.insert(0, os.path.dirname(__file__))
+
+# Raise fd soft limit so 5000 concurrent aiohttp sockets don't hit EMFILE.
+# macOS GUI-launched shells default to 256; hard limit is unlimited here.
+try:
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    target = 65536 if hard == resource.RLIM_INFINITY else min(65536, hard)
+    if soft < target:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+except Exception:
+    pass
 
 from test_config import *
 
 TEST_DATE = "2026-09-01"
 TEST_VACCINE = "ConcurrVax"
+
+
+def cleanup_previous_data():
+    """Clean up residual data from previous test runs (not counted in timing)."""
+    print("\n--- Cleanup: clearing residual data from previous runs ---")
+
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    compose_file = os.path.join(project_root, "docker-compose.yml")
+
+    # 1. Truncate all tables in PostgreSQL
+    sql = "TRUNCATE Reservations, Availabilities, Patients, Caregivers, Vaccines, VaccineDoses CASCADE;"
+    try:
+        subprocess.run(
+            ["docker", "compose", "-f", compose_file, "exec", "-T", "postgres",
+             "psql", "-U", "postgres", "-d", "scheduler_db", "-c", sql],
+            capture_output=True, check=True
+        )
+        print("  PostgreSQL tables cleared.")
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        print(f"  [WARNING] PostgreSQL cleanup skipped: {e}")
+
+    # 2. Flush Redis
+    try:
+        subprocess.run(
+            ["docker", "compose", "-f", compose_file, "exec", "-T", "redis",
+             "redis-cli", "FLUSHALL"],
+            capture_output=True, check=True
+        )
+        print("  Redis cache cleared.")
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        print(f"  [WARNING] Redis cleanup skipped: {e}")
 
 
 def setup_concurrent_test(suffix, num_patients, num_doses, num_caregivers):
@@ -47,36 +91,47 @@ def setup_concurrent_test(suffix, num_patients, num_doses, num_caregivers):
     """
     print(f"\n--- Setup: {num_caregivers} caregivers, {num_doses} doses, {num_patients} patients ---")
 
-    # Create caregivers and upload availability
+    def retry(fn, *args, max_retries=3, **kwargs):
+        """Retry an API call up to max_retries times."""
+        resp = None
+        for attempt in range(max_retries):
+            resp = fn(*args, **kwargs)
+            if resp.status_code == 200:
+                return resp
+            time.sleep(0.1 * (attempt + 1))
+        return resp
+
+    # Create caregivers and upload availability (with retry)
     for i in range(num_caregivers):
         cg_name = f"cc_cg{i}_{suffix}"
-        create_caregiver(cg_name)
+        retry(create_caregiver, cg_name)
         cg_token, _ = login_caregiver(cg_name)
-        upload_availability(cg_token, TEST_DATE)
+        retry(upload_availability, cg_token, TEST_DATE)
         logout(cg_token)
 
     # Add vaccine doses (use first caregiver to add doses)
     cg_token, _ = login_caregiver(f"cc_cg0_{suffix}")
-    add_doses(cg_token, TEST_VACCINE, num_doses)
+    resp = retry(add_doses, cg_token, TEST_VACCINE, num_doses)
+    if resp.status_code != 200:
+        print(f"  [WARNING] add_doses failed: HTTP {resp.status_code}, {resp.json()}")
     logout(cg_token)
 
     # Create patients and collect tokens
     tokens = []
     for i in range(num_patients):
         pat_name = f"cc_pat{i}_{suffix}"
-        create_patient(pat_name)
+        retry(create_patient, pat_name)
         token, _ = login_patient(pat_name)
         tokens.append(token)
         logout(token)
 
-    # Re-login all patients (tokens are still valid since they're JWTs)
     print(f"  Setup complete.")
     return tokens
 
 
-def test_concurrent_reservations(t, suffix, tokens, expected_successes):
+async def test_concurrent_reservations(t, suffix, tokens, expected_successes):
     """
-    All patients attempt to reserve simultaneously.
+    All patients attempt to reserve simultaneously (async I/O via aiohttp to bypass GIL).
     Validates:
       - Exactly expected_successes reservations succeed
       - No overselling (successes <= available doses)
@@ -84,24 +139,31 @@ def test_concurrent_reservations(t, suffix, tokens, expected_successes):
     """
     print(f"\n--- Concurrent Reservations: {len(tokens)} patients racing for {expected_successes} doses ---")
 
+    async def attempt_reserve(session, token):
+        start = time.time()
+        async with session.post(
+            f"{BASE_URL}/api/reservation/reserve",
+            json={"date": TEST_DATE, "vaccine": TEST_VACCINE},
+            headers={"Authorization": f"Bearer {token}"},
+        ) as resp:
+            body = await resp.json()
+            elapsed = time.time() - start
+            return resp.status, body, elapsed, token
+
+    # limit=0 disables the per-host connection cap so all requests can be in-flight at once
+    connector = aiohttp.TCPConnector(limit=0)
+    timeout = aiohttp.ClientTimeout(total=120)
+
+    start_time = time.time()
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        raw_results = await asyncio.gather(*(attempt_reserve(session, tok) for tok in tokens))
+    total_time = time.time() - start_time
+
     results = []
     latencies = []
-
-    def attempt_reserve(token):
-        start = time.time()
-        resp = reserve(token, TEST_DATE, TEST_VACCINE)
-        elapsed = time.time() - start
-        return resp.status_code, resp.json(), elapsed, token
-
-    # Fire all requests concurrently
-    start_time = time.time()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(tokens)) as executor:
-        futures = [executor.submit(attempt_reserve, tok) for tok in tokens]
-        for f in concurrent.futures.as_completed(futures):
-            status, body, elapsed, token = f.result()
-            results.append((status, body, token))
-            latencies.append(elapsed)
-    total_time = time.time() - start_time
+    for status, body, elapsed, token in raw_results:
+        results.append((status, body, token))
+        latencies.append(elapsed)
 
     # Analyze results
     successes = [(s, b, t) for s, b, t in results if s == 200]
@@ -167,12 +229,18 @@ def test_concurrent_reservations(t, suffix, tokens, expected_successes):
     print(f"    P95 latency:   {p95*1000:.0f}ms")
     print(f"    P99 latency:   {p99*1000:.0f}ms")
 
-    return cancel_pairs
+    return cancel_pairs, {
+        'rps': rps,
+        'avg_latency': avg_latency,
+        'p50': p50,
+        'p95': p95,
+        'p99': p99,
+    }
 
 
-def test_concurrent_cancellations(t, suffix, cancel_pairs):
+async def test_concurrent_cancellations(t, suffix, cancel_pairs):
     """
-    Cancel all successful reservations concurrently.
+    Cancel all successful reservations concurrently (async I/O via aiohttp).
     Validates that all cancellations succeed without errors.
     """
     if not cancel_pairs:
@@ -181,17 +249,20 @@ def test_concurrent_cancellations(t, suffix, cancel_pairs):
 
     print(f"\n--- Concurrent Cancellations: {len(cancel_pairs)} appointments ---")
 
-    results = []
-
-    def attempt_cancel(pair):
+    async def attempt_cancel(session, pair):
         token, aid = pair
-        resp = cancel(token, aid)
-        return resp.status_code, resp.json()
+        async with session.post(
+            f"{BASE_URL}/api/reservation/cancel",
+            params={"appointmentId": aid},
+            headers={"Authorization": f"Bearer {token}"},
+        ) as resp:
+            body = await resp.json()
+            return resp.status, body
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(cancel_pairs)) as executor:
-        futures = [executor.submit(attempt_cancel, pair) for pair in cancel_pairs]
-        for f in concurrent.futures.as_completed(futures):
-            results.append(f.result())
+    connector = aiohttp.TCPConnector(limit=0)
+    timeout = aiohttp.ClientTimeout(total=120)
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        results = await asyncio.gather(*(attempt_cancel(session, p) for p in cancel_pairs))
 
     successes = [r for r in results if r[0] == 200]
     failures = [r for r in results if r[0] != 200]
@@ -233,9 +304,10 @@ def test_no_race_after_cancel_and_rebook(t, suffix, cancel_pairs, num_doses, num
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Concurrency tests for vaccine scheduler")
-    parser.add_argument("--patients", type=int, default=30, help="Number of concurrent patients")
-    parser.add_argument("--doses", type=int, default=10, help="Number of available vaccine doses")
-    parser.add_argument("--caregivers", type=int, default=15, help="Number of caregivers with availability")
+    parser.add_argument("--patients", type=int, default=5000, help="Number of concurrent patients")
+    parser.add_argument("--doses", type=int, default=500, help="Number of available vaccine doses")
+    parser.add_argument("--caregivers", type=int, default=500, help="Number of caregivers with availability")
+    parser.add_argument("--runs", type=int, default=10, help="Number of test runs")
     args = parser.parse_args()
 
     # Ensure caregivers >= doses (each reservation consumes one caregiver slot)
@@ -244,22 +316,55 @@ if __name__ == "__main__":
               f"Setting caregivers = doses.")
         args.caregivers = args.doses
 
-    suffix = random_suffix()
     t = TestResult("Concurrency Tests")
 
-    print(f"\nConcurrency Tests (suffix={suffix})")
+    print(f"\nConcurrency Tests")
     print(f"Target: {BASE_URL}")
-    print(f"Config: {args.patients} patients, {args.doses} doses, {args.caregivers} caregivers")
+    print(f"Config: {args.patients} patients, {args.doses} doses, {args.caregivers} caregivers, {args.runs} runs")
     print("=" * 60)
 
+    all_metrics = []
+
     try:
-        tokens = setup_concurrent_test(suffix, args.patients, args.doses, args.caregivers)
-        cancel_pairs = test_concurrent_reservations(t, suffix, tokens, args.doses)
-        test_concurrent_cancellations(t, suffix, cancel_pairs)
-        test_no_race_after_cancel_and_rebook(t, suffix, cancel_pairs, args.doses, args.caregivers)
-    except requests.exceptions.ConnectionError:
-        print(f"\n[ERROR] Cannot connect to {BASE_URL}. Is the application running?")
+        for run_idx in range(args.runs):
+            suffix = random_suffix()
+            print(f"\n{'='*60}")
+            print(f"  Run {run_idx + 1}/{args.runs} (suffix={suffix})")
+            print(f"{'='*60}")
+
+            cleanup_previous_data()
+            tokens = setup_concurrent_test(suffix, args.patients, args.doses, args.caregivers)
+            cancel_pairs, metrics = asyncio.run(test_concurrent_reservations(t, suffix, tokens, args.doses))
+            asyncio.run(test_concurrent_cancellations(t, suffix, cancel_pairs))
+            test_no_race_after_cancel_and_rebook(t, suffix, cancel_pairs, args.doses, args.caregivers)
+
+            all_metrics.append(metrics)
+    except (requests.exceptions.ConnectionError, aiohttp.ClientError) as e:
+        print(f"\n[ERROR] Cannot connect to {BASE_URL}. Is the application running? ({e})")
         sys.exit(1)
+
+    # ── Trimmed average: remove highest and lowest QPS runs ──
+    if len(all_metrics) >= 3:
+        sorted_by_rps = sorted(all_metrics, key=lambda m: m['rps'])
+        trimmed = sorted_by_rps[1:-1]
+
+        avg_rps = sum(m['rps'] for m in trimmed) / len(trimmed)
+        avg_avg_latency = sum(m['avg_latency'] for m in trimmed) / len(trimmed)
+        avg_p50 = sum(m['p50'] for m in trimmed) / len(trimmed)
+        avg_p95 = sum(m['p95'] for m in trimmed) / len(trimmed)
+        avg_p99 = sum(m['p99'] for m in trimmed) / len(trimmed)
+
+        print(f"\n{'='*60}")
+        print(f"  Trimmed Average ({len(trimmed)} runs, excluded highest & lowest QPS)")
+        print(f"{'='*60}")
+        print(f"  Performance:")
+        print(f"    Throughput:    {avg_rps:.1f} req/s")
+        print(f"    Avg latency:   {avg_avg_latency*1000:.0f}ms")
+        print(f"    P50 latency:   {avg_p50*1000:.0f}ms")
+        print(f"    P95 latency:   {avg_p95*1000:.0f}ms")
+        print(f"    P99 latency:   {avg_p99*1000:.0f}ms")
+    else:
+        print(f"\n[WARNING] Not enough runs for trimmed average (need >= 3, got {len(all_metrics)})")
 
     success = t.summary()
     sys.exit(0 if success else 1)

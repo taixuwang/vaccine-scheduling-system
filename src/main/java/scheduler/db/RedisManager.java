@@ -9,10 +9,10 @@ public class RedisManager {
 
     static {
         JedisPoolConfig poolConfig = new JedisPoolConfig();
-        poolConfig.setMaxTotal(50); // Maximum active connections
-        poolConfig.setMaxIdle(10);  // Maximum idle connections
-        poolConfig.setMinIdle(2);   // Minimum idle connections
-        poolConfig.setTestOnBorrow(true); // Validate connection before using
+        poolConfig.setMaxTotal(2000); // Align with Tomcat threads; 5000 concurrent need enough Jedis conns
+        poolConfig.setMaxIdle(500);  // Maximum idle connections
+        poolConfig.setMinIdle(50);  // Minimum idle connections
+        poolConfig.setTestOnBorrow(false); // Skip validation for speed (Redis is local, stable)
         
         // Connect to Redis. Read endpoint from environment variable if available.
         String redisHost = System.getenv("RedisEndpoint");

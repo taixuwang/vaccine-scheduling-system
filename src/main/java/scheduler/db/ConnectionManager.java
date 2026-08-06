@@ -22,10 +22,10 @@ public class ConnectionManager {
         config.setPassword(password);
 
         // Connection pool optimization settings
-        config.setMaximumPoolSize(10);          
-        config.setMinimumIdle(2);               
-        config.setIdleTimeout(30000);           
-        config.setConnectionTimeout(30000);     
+        config.setMaximumPoolSize(170);
+        config.setMinimumIdle(10);
+        config.setIdleTimeout(30000);
+        config.setConnectionTimeout(30000);
         config.setMaxLifetime(1800000);         
 
         dataSource = new HikariDataSource(config);

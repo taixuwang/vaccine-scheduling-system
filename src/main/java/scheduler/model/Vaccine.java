@@ -34,12 +34,23 @@ public class Vaccine {
         ConnectionManager cm = new ConnectionManager();
         Connection con = cm.createConnection();
 
-        String addDoses = "INSERT INTO vaccines VALUES (?, ?)";
         try {
-            PreparedStatement statement = con.prepareStatement(addDoses);
-            statement.setString(1, this.vaccineName);
-            statement.setInt(2, this.availableDoses);
-            statement.executeUpdate();
+            // Insert vaccine name (if not exists)
+            String addVaccine = "INSERT INTO Vaccines (Name) VALUES (?) ON CONFLICT DO NOTHING";
+            PreparedStatement vaccineStmt = con.prepareStatement(addVaccine);
+            vaccineStmt.setString(1, this.vaccineName);
+            vaccineStmt.executeUpdate();
+            vaccineStmt.close();
+
+            // Insert individual dose rows
+            String addDose = "INSERT INTO VaccineDoses (Vaccine_name, Status) VALUES (?, 'available')";
+            PreparedStatement doseStmt = con.prepareStatement(addDose);
+            for (int i = 0; i < this.availableDoses; i++) {
+                doseStmt.setString(1, this.vaccineName);
+                doseStmt.addBatch();
+            }
+            doseStmt.executeBatch();
+            doseStmt.close();
         } catch (SQLException e) {
             throw new SQLException();
         } finally {
@@ -47,7 +58,7 @@ public class Vaccine {
         }
     }
 
-    // Increment the available doses
+    // Increment the available doses by inserting new dose rows
     public void increaseAvailableDoses(int num) throws SQLException {
         if (num <= 0) {
             throw new IllegalArgumentException("Argument cannot be negative!");
@@ -57,12 +68,14 @@ public class Vaccine {
         ConnectionManager cm = new ConnectionManager();
         Connection con = cm.createConnection();
 
-        String removeAvailability  = "UPDATE vaccines SET Doses = ? WHERE name = ?;";
+        String addDoses = "INSERT INTO VaccineDoses (Vaccine_name, Status) VALUES (?, 'available')";
         try {
-            PreparedStatement statement = con.prepareStatement(removeAvailability);
-            statement.setInt(1, this.availableDoses);
-            statement.setString(2, this.vaccineName);
-            statement.executeUpdate();
+            PreparedStatement statement = con.prepareStatement(addDoses);
+            for (int i = 0; i < num; i++) {
+                statement.setString(1, this.vaccineName);
+                statement.addBatch();
+            }
+            statement.executeBatch();
         } catch (SQLException e) {
             throw new SQLException();
         } finally {
@@ -70,7 +83,7 @@ public class Vaccine {
         }
     }
 
-    // Decrement the available doses
+    // Decrement the available doses by marking dose rows as reserved
     public void decreaseAvailableDoses(int num) throws SQLException {
         if (this.availableDoses - num < 0) {
             throw new IllegalArgumentException("Not enough available doses!");
@@ -79,11 +92,13 @@ public class Vaccine {
         ConnectionManager cm = new ConnectionManager();
         Connection con = cm.createConnection();
 
-        String removeAvailability  = "UPDATE vaccines SET Doses = ? WHERE name = ?;";
+        String reserveDoses = "UPDATE VaccineDoses SET Status = 'reserved' "
+                + "WHERE Dose_id IN (SELECT Dose_id FROM VaccineDoses "
+                + "WHERE Vaccine_name = ? AND Status = 'available' LIMIT ?)";
         try {
-            PreparedStatement statement = con.prepareStatement(removeAvailability);
-            statement.setInt(1, this.availableDoses);
-            statement.setString(2, this.vaccineName);
+            PreparedStatement statement = con.prepareStatement(reserveDoses);
+            statement.setString(1, this.vaccineName);
+            statement.setInt(2, num);
             statement.executeUpdate();
         } catch (SQLException e) {
             throw new SQLException();
@@ -126,7 +141,11 @@ public class Vaccine {
             ConnectionManager cm = new ConnectionManager();
             Connection con = cm.createConnection();
 
-            String getVaccine = "SELECT Name, Doses FROM Vaccines WHERE Name = ?";
+            String getVaccine = "SELECT V.Name, COUNT(D.Dose_id) as Doses "
+                    + "FROM Vaccines as V "
+                    + "JOIN VaccineDoses as D ON V.Name = D.Vaccine_name "
+                    + "WHERE V.Name = ? AND D.Status = 'available' "
+                    + "GROUP BY V.Name";
             try {
                 PreparedStatement statement = con.prepareStatement(getVaccine);
                 statement.setString(1, this.vaccineName);

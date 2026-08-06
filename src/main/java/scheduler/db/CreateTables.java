@@ -10,10 +10,17 @@ import java.sql.Statement;
 
 public class CreateTables {
     public static void main(String[] args) {
-        String endpoint = System.getenv("Endpoint");
-        String database = System.getenv("Database");
-        String user = System.getenv("Username");
-        String password = System.getenv("Password");
+        // --- Aurora config (commented out for local Docker PostgreSQL) ---
+        // String endpoint = System.getenv("Endpoint");
+        // String database = System.getenv("Database");
+        // String user = System.getenv("Username");
+        // String password = System.getenv("Password");
+
+        // --- Local Docker PostgreSQL ---
+        String endpoint = "localhost";
+        String database = "scheduler_db";
+        String user = "postgres";
+        String password = "password";
 
         String url = "jdbc:postgresql://" + endpoint + ":5432/" + database;
 

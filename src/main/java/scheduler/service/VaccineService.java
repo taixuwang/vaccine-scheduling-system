@@ -47,33 +47,32 @@ public class VaccineService {
         Connection con = cm.createConnection();
         try {
             con.setAutoCommit(false);
-            
-            // Try to update first (Atomic increment)
-            String updateVaccine = "UPDATE vaccines SET Doses = Doses + ? WHERE name = ?";
-            PreparedStatement updateStmt = con.prepareStatement(updateVaccine);
-            updateStmt.setInt(1, doses);
-            updateStmt.setString(2, vaccineName);
-            int rowsAffected = updateStmt.executeUpdate();
-            updateStmt.close();
-            
-            if (rowsAffected == 0) {
-                // Vaccine does not exist, insert it
-                String insertVaccine = "INSERT INTO vaccines VALUES (?, ?)";
-                PreparedStatement insertStmt = con.prepareStatement(insertVaccine);
+
+            // 1. Ensure vaccine exists (INSERT if not, do nothing if already exists)
+            String upsertVaccine = "INSERT INTO Vaccines (Name) VALUES (?) ON CONFLICT DO NOTHING";
+            PreparedStatement upsertStmt = con.prepareStatement(upsertVaccine);
+            upsertStmt.setString(1, vaccineName);
+            upsertStmt.executeUpdate();
+            upsertStmt.close();
+
+            // 2. Insert N individual dose rows (one row per dose, no counter)
+            String insertDose = "INSERT INTO VaccineDoses (Vaccine_name, Status) VALUES (?, 'available')";
+            PreparedStatement insertStmt = con.prepareStatement(insertDose);
+            for (int i = 0; i < doses; i++) {
                 insertStmt.setString(1, vaccineName);
-                insertStmt.setInt(2, doses);
-                insertStmt.executeUpdate();
-                insertStmt.close();
+                insertStmt.addBatch();
             }
+            insertStmt.executeBatch();
+            insertStmt.close();
 
             con.commit();
-            
-            // Also update Redis
+
+            // 3. Update Redis cache (count of available doses)
             try (redis.clients.jedis.Jedis jedis = scheduler.db.RedisManager.getJedis()) {
                 String redisKey = "vaccine:" + vaccineName + ":doses";
                 jedis.incrBy(redisKey, doses);
             } catch (Exception e) {}
-            
+
             return "Doses updated!";
         } catch (SQLException e) {
             try { con.rollback(); } catch (SQLException ex) {}

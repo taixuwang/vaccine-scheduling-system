@@ -37,7 +37,7 @@
 --   wrk -t4 -c20 -d30s -s src/test/wrk_reserve.lua http://localhost
 
 -- IMPORTANT: Replace with an actual patient JWT token before running
-local token = "YOUR_JWT_TOKEN"
+local token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ2YWNjaW5lLXNjaGVkdWxlciIsInVzZXJuYW1lIjoid3JrX3BhdGllbnQiLCJyb2xlIjoiUGF0aWVudCIsImlhdCI6MTc4NjAwMjA0NiwiZXhwIjoxNzg2MDg4NDQ2fQ.pWCRtAm_U7kWmsOsq2SSMZafKGg-8uGvqUQ0mJBiNk8"
 
 wrk.method = "POST"
 wrk.headers["Content-Type"] = "application/json"
