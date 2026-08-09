@@ -43,7 +43,7 @@ public class AuthService {
 
     public String createPatient(String username, String password) {
         if (!checkPassword(password)) {
-            throw new RuntimeException("Create patient failed, please use a strong password");
+            throw new RuntimeException("Please use a strong password");
         }
 
         byte[] salt = Util.generateSalt();
@@ -57,7 +57,7 @@ public class AuthService {
                 checkStmt.setString(1, username);
                 try (ResultSet rs = checkStmt.executeQuery()) {
                     if (rs.next()) {
-                        throw new RuntimeException("Username taken, try again");
+                        throw new RuntimeException("Username already exists");
                     }
                 }
             }
@@ -72,7 +72,7 @@ public class AuthService {
             
             return "Created user " + username;
         } catch (SQLException e) {
-            throw new RuntimeException("Create patient failed");
+            throw new RuntimeException("Failed to create user, please try again");
         } finally {
             cm.closeConnection();
         }
@@ -80,7 +80,7 @@ public class AuthService {
 
     public String createCaregiver(String username, String password) {
         if (!checkPassword(password)) {
-            throw new RuntimeException("Create caregiver failed, please use a strong password");
+            throw new RuntimeException("Please use a strong password");
         }
         
         byte[] salt = Util.generateSalt();
@@ -94,7 +94,7 @@ public class AuthService {
                 checkStmt.setString(1, username);
                 try (ResultSet rs = checkStmt.executeQuery()) {
                     if (rs.next()) {
-                        throw new RuntimeException("Username taken, try again!");
+                        throw new RuntimeException("Username already exists");
                     }
                 }
             }
@@ -109,7 +109,7 @@ public class AuthService {
 
             return "Created user " + username;
         } catch (SQLException e) {
-            throw new RuntimeException("Failed to create user.");
+            throw new RuntimeException("Failed to create user, please try again");
         } finally {
             cm.closeConnection();
         }
@@ -130,17 +130,17 @@ public class AuthService {
                         byte[] calculatedHash = Util.generateHash(password, salt);
                         
                         if (!Arrays.equals(hash, calculatedHash)) {
-                            throw new RuntimeException("Login patient failed");
+                            throw new RuntimeException("Invalid username or password");
                         } else {
                             return JwtUtil.generateToken(username, "Patient");
                         }
                     } else {
-                        throw new RuntimeException("Login patient failed");
+                        throw new RuntimeException("Invalid username or password");
                     }
                 }
             }
         } catch (SQLException e) {
-            throw new RuntimeException("Login patient failed");
+            throw new RuntimeException("Invalid username or password");
         } finally {
             cm.closeConnection();
         }
@@ -161,17 +161,17 @@ public class AuthService {
                         byte[] calculatedHash = Util.generateHash(password, salt);
                         
                         if (!Arrays.equals(hash, calculatedHash)) {
-                            throw new RuntimeException("Login failed.");
+                            throw new RuntimeException("Invalid username or password");
                         } else {
                             return JwtUtil.generateToken(username, "Caregiver");
                         }
                     } else {
-                        throw new RuntimeException("Login failed.");
+                        throw new RuntimeException("Invalid username or password");
                     }
                 }
             }
         } catch (SQLException e) {
-            throw new RuntimeException("Login failed.");
+            throw new RuntimeException("Invalid username or password");
         } finally {
             cm.closeConnection();
         }

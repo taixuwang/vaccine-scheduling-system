@@ -2,52 +2,59 @@
 
 A RESTful backend application built with Java and Spring Boot for managing vaccine scheduling. The application provides endpoints for user management (patients and caregivers), vaccine inventory, and appointment bookings.
 
-## Architecture
+## Architecture & Tech Stack
 
-The system is designed for high availability and scalability:
-- **Application Server**: Spring Boot 2.7
-- **Database**: PostgreSQL (or SQLite for local development)
-- **Caching & Session Management**: Redis
+The system is designed for high availability, high concurrency, and scalability:
+- **Application Framework**: Spring Boot 2.7
+- **Database**: PostgreSQL (handling transactions and concurrency control via `FOR UPDATE SKIP LOCKED`)
+- **Caching**: Redis (for rapid pre-flight checks and atomic dose counting)
+- **Authentication**: Stateless JWT tokens (solving multi-node session issues)
+- **Connection Pooling**: HikariCP
 - **Load Balancing**: Nginx
 
 ## Prerequisites
 
 - Java 11 or higher
 - Maven
-- Docker and Docker Compose (for distributed deployment)
+- Docker and Docker Compose (recommended for deployment)
+- Python 3.x with `requests` and `aiohttp` (for running the integration test suite)
 
 ## Running the Application
 
-### 1. Multi-Node Deployment (Recommended)
+### Multi-Node Deployment (Recommended)
 
-The easiest way to run the application in a production-like environment is using Docker Compose. This sets up an Nginx load balancer, three application instances, and a Redis server.
+The easiest way to run the application in a production-like distributed environment is using Docker Compose. This sets up an Nginx load balancer (port 80), three application instances, a PostgreSQL server, and a Redis server.
 
 ```bash
-# Build the application
-mvn clean package
+# Build the application using Maven
+mvn clean package -DskipTests
 
-# Start the cluster
-docker-compose up --build
+# Start the cluster in detached mode
+docker-compose up --build -d
 ```
 The API will be available at `http://localhost`.
 
-Note: You may need to provide your PostgreSQL credentials in the `docker-compose.yml` or via environment variables before running Docker Compose.
+### Running Integration Tests
 
-### 2. Local Development (Standalone)
-
-To run a single instance locally using Maven:
-
-1. Ensure you have a Redis server running locally or accessible.
-2. Initialize the SQLite database (if not using PostgreSQL):
-   - Run the application once to generate `reservation.db`.
-   - Execute `src/main/resources/sqlite/create.sql` against it.
-3. Set the required environment variables (e.g., in your IDE):
-   - `DBPath=reservation.db` (for SQLite)
-   - `RedisEndpoint=localhost`
-4. Run the application:
+A comprehensive Python test suite is provided in the `src/test/` directory to verify authentication, business logic, and concurrency safety.
 
 ```bash
-mvn spring-boot:run
+# Install required Python packages
+pip3 install requests aiohttp
+
+# Run the complete test suite against the running cluster
+python3 src/test/run_all.py
 ```
 
-The application's main entry point is `scheduler.VaccineApplication`.
+### Stopping the Cluster
+
+```bash
+# Stop and remove containers, networks, and volumes
+docker-compose down
+```
+
+## System Highlights
+
+- **Stateless Authentication**: Removed local in-memory session management in favor of JWT tokens, enabling seamless request routing across multiple nodes.
+- **Concurrency Control**: Implemented robust concurrency handling using a combination of Redis atomic decrements (fast path) and PostgreSQL `FOR UPDATE SKIP LOCKED` (source of truth) to prevent overselling of vaccine doses under heavy load.
+- **Resource Management**: Extensively refactored database interactions to use `try-with-resources`, ensuring no connection or statement leaks occur during high traffic or error conditions.

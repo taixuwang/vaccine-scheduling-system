@@ -15,7 +15,7 @@ public class VaccineService {
 
     public String uploadAvailability(String date) {
         if (UserContext.getCaregiver() == null) {
-            throw new RuntimeException("Please login as a caregiver first!");
+            throw new RuntimeException("Please login as a caregiver");
         }
 
         ConnectionManager cm = new ConnectionManager();
@@ -30,9 +30,9 @@ public class VaccineService {
             }
             return "Availability uploaded!";
         } catch (IllegalArgumentException e) {
-            throw new RuntimeException("Please enter a valid date!");
+            throw new RuntimeException("Invalid date format");
         } catch (SQLException e) {
-            throw new RuntimeException("Error occurred when uploading availability");
+            throw new RuntimeException("Operation failed, please try again");
         } finally {
             cm.closeConnection();
         }
@@ -40,7 +40,7 @@ public class VaccineService {
 
     public String addDoses(String vaccineName, int doses) {
         if (UserContext.getCaregiver() == null) {
-            throw new RuntimeException("Please login as a caregiver first!");
+            throw new RuntimeException("Please login as a caregiver");
         }
 
         ConnectionManager cm = new ConnectionManager();
@@ -76,7 +76,7 @@ public class VaccineService {
             return "Doses updated!";
         } catch (SQLException e) {
             try { con.rollback(); } catch (SQLException ex) {}
-            throw new RuntimeException("Error occurred when adding doses");
+            throw new RuntimeException("Operation failed, please try again");
         } finally {
             try { con.setAutoCommit(true); } catch (SQLException ex) {}
             cm.closeConnection();

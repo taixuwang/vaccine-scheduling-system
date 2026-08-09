@@ -58,9 +58,9 @@ public class ReservationService {
                 }
             }
         } catch (IllegalArgumentException e) {
-            throw new RuntimeException("Please try again");
+            throw new RuntimeException("Invalid date format");
         } catch (SQLException e) {
-            throw new RuntimeException("Please try again");
+            throw new RuntimeException("Operation failed, please try again");
         } finally {
             cm.closeConnection();
         }
@@ -128,7 +128,7 @@ public class ReservationService {
                     try (ResultSet caregiverResult = caregiverStatement.executeQuery()) {
                         if (!caregiverResult.next()) {
                             con.rollback();
-                            throw new RuntimeException("No caregiver is available");
+                            throw new RuntimeException("No caregiver available");
                         }
                         assignedCaregiver = caregiverResult.getString("Username");
                     }
@@ -161,10 +161,10 @@ public class ReservationService {
                     throw e;
                 }
             } catch (IllegalArgumentException e) {
-                throw new RuntimeException("Please try again");
+                throw new RuntimeException("Invalid date format");
             } catch (SQLException e) {
                 try { con.rollback(); } catch (SQLException ex) {}
-                throw new RuntimeException("Please try again");
+                throw new RuntimeException("Operation failed, please try again");
             } finally {
                 try { con.setAutoCommit(true); } catch (SQLException ex) {}
                 cm.closeConnection();
@@ -215,10 +215,10 @@ public class ReservationService {
             }
 
             if (UserContext.getPatient() != null && !UserContext.getPatient().getUsername().equals(patientName)) {
-                throw new RuntimeException("Please try again");
+                throw new RuntimeException("Access denied");
             }
             if (UserContext.getCaregiver() != null && !UserContext.getCaregiver().getUsername().equals(caregiverName)) {
-                throw new RuntimeException("Please try again");
+                throw new RuntimeException("Access denied");
             }
 
             try {
@@ -258,7 +258,7 @@ public class ReservationService {
                 throw e;
             }
         } catch (SQLException e) {
-            throw new RuntimeException("Please try again");
+            throw new RuntimeException("Operation failed, please try again");
         } finally {
             try { con.setAutoCommit(true); } catch (SQLException ex) {}
             cm.closeConnection();
@@ -298,7 +298,7 @@ public class ReservationService {
                 }
             }
         } catch (SQLException e) {
-            throw new RuntimeException("Please try again");
+            throw new RuntimeException("Operation failed, please try again");
         } finally {
             cm.closeConnection();
         }

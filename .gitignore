@@ -8,11 +8,14 @@ target/
 out/
 hs_err_pid*
 lib/
+.mvn/
+mvnw
+mvnw.cmd
 
 # Local Database
 *.db
 
-# Python
+# Python (for tests)
 __pycache__/
 *.py[cod]
 *$py.class
@@ -22,6 +25,7 @@ env/
 
 # Sensitive Environment Variables
 .env
+*.env
 
 # IDE Settings
 .idea/
@@ -36,3 +40,7 @@ env/
 .DS_Store?
 ._*
 Thumbs.db
+
+# Docker
+docker-compose.override.yml
+.docker/
