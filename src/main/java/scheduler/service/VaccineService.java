@@ -23,11 +23,11 @@ public class VaccineService {
         try {
             Date d = Date.valueOf(date);
             String addAvailability = "INSERT INTO Availabilities VALUES (?, ?)";
-            PreparedStatement statement = con.prepareStatement(addAvailability);
-            statement.setDate(1, d);
-            statement.setString(2, UserContext.getCaregiver().getUsername());
-            statement.executeUpdate();
-            statement.close();
+            try (PreparedStatement statement = con.prepareStatement(addAvailability)) {
+                statement.setDate(1, d);
+                statement.setString(2, UserContext.getCaregiver().getUsername());
+                statement.executeUpdate();
+            }
             return "Availability uploaded!";
         } catch (IllegalArgumentException e) {
             throw new RuntimeException("Please enter a valid date!");
@@ -50,20 +50,20 @@ public class VaccineService {
 
             // 1. Ensure vaccine exists (INSERT if not, do nothing if already exists)
             String upsertVaccine = "INSERT INTO Vaccines (Name) VALUES (?) ON CONFLICT DO NOTHING";
-            PreparedStatement upsertStmt = con.prepareStatement(upsertVaccine);
-            upsertStmt.setString(1, vaccineName);
-            upsertStmt.executeUpdate();
-            upsertStmt.close();
+            try (PreparedStatement upsertStmt = con.prepareStatement(upsertVaccine)) {
+                upsertStmt.setString(1, vaccineName);
+                upsertStmt.executeUpdate();
+            }
 
             // 2. Insert N individual dose rows (one row per dose, no counter)
             String insertDose = "INSERT INTO VaccineDoses (Vaccine_name, Status) VALUES (?, 'available')";
-            PreparedStatement insertStmt = con.prepareStatement(insertDose);
-            for (int i = 0; i < doses; i++) {
-                insertStmt.setString(1, vaccineName);
-                insertStmt.addBatch();
+            try (PreparedStatement insertStmt = con.prepareStatement(insertDose)) {
+                for (int i = 0; i < doses; i++) {
+                    insertStmt.setString(1, vaccineName);
+                    insertStmt.addBatch();
+                }
+                insertStmt.executeBatch();
             }
-            insertStmt.executeBatch();
-            insertStmt.close();
 
             con.commit();
 

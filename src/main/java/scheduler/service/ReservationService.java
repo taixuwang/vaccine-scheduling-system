@@ -27,31 +27,35 @@ public class ReservationService {
 
         List<String> res = new ArrayList<>();
         try {
-            String getSchedule = "SELECT A.Username FROM Availabilities as A WHERE Time = ? ORDER BY A.Username";
-            PreparedStatement sheduleStatement = con.prepareStatement(getSchedule);
             Date d = Date.valueOf(date);
-            sheduleStatement.setDate(1, d);
-            ResultSet scheduleResult = sheduleStatement.executeQuery();
-            res.add("Caregivers:");
-            boolean hasCaregivers = false;
-            while (scheduleResult.next()) {
-                hasCaregivers = true;
-                res.add(scheduleResult.getString("Username"));
-            }
-            if (!hasCaregivers) {
-                res.add("No caregivers available");
+            String getSchedule = "SELECT A.Username FROM Availabilities as A WHERE Time = ? ORDER BY A.Username";
+            try (PreparedStatement sheduleStatement = con.prepareStatement(getSchedule)) {
+                sheduleStatement.setDate(1, d);
+                try (ResultSet scheduleResult = sheduleStatement.executeQuery()) {
+                    res.add("Caregivers:");
+                    boolean hasCaregivers = false;
+                    while (scheduleResult.next()) {
+                        hasCaregivers = true;
+                        res.add(scheduleResult.getString("Username"));
+                    }
+                    if (!hasCaregivers) {
+                        res.add("No caregivers available");
+                    }
+                }
             }
             String getVaccine = "SELECT V.Name, COUNT(D.Dose_id) as Doses FROM Vaccines as V JOIN VaccineDoses as D ON V.Name = D.Vaccine_name WHERE D.Status = 'available' GROUP BY V.Name";
-            PreparedStatement vaccineStatement = con.prepareStatement(getVaccine);
-            ResultSet vaccineResult = vaccineStatement.executeQuery();
-            res.add("Vaccines:");
-            boolean hasVaccines = false;
-            while (vaccineResult.next()) {
-                hasVaccines = true;
-                res.add(vaccineResult.getString("Name") + " " + vaccineResult.getInt("Doses"));
-            }
-            if (!hasVaccines) {
-                res.add("No vaccines available");
+            try (PreparedStatement vaccineStatement = con.prepareStatement(getVaccine)) {
+                try (ResultSet vaccineResult = vaccineStatement.executeQuery()) {
+                    res.add("Vaccines:");
+                    boolean hasVaccines = false;
+                    while (vaccineResult.next()) {
+                        hasVaccines = true;
+                        res.add(vaccineResult.getString("Name") + " " + vaccineResult.getInt("Doses"));
+                    }
+                    if (!hasVaccines) {
+                        res.add("No vaccines available");
+                    }
+                }
             }
         } catch (IllegalArgumentException e) {
             throw new RuntimeException("Please try again");
@@ -83,29 +87,9 @@ public class ReservationService {
         }
 
         if (redisDown) {
-            // Redis is down: fall back to a DB stock check. This is only an early
-            // bail-out; the SKIP LOCKED claim later in the transaction is
+            // Redis is down: skip the check, the SKIP LOCKED claim later in the transaction is
             // the real guard against oversell.
-            ConnectionManager fallbackCm = new ConnectionManager();
-            Connection fallbackCon = fallbackCm.createConnection();
-            try {
-                String checkDoses = "SELECT COUNT(*) as cnt FROM VaccineDoses WHERE Vaccine_name = ? AND Status = 'available'";
-                PreparedStatement ps = fallbackCon.prepareStatement(checkDoses);
-                ps.setString(1, vaccineName);
-                ResultSet rs = ps.executeQuery();
-                if (!rs.next() || rs.getInt("cnt") <= 0) {
-                    rs.close();
-                    ps.close();
-                    throw new RuntimeException("Not enough available doses");
-                }
-                rs.close();
-                ps.close();
-                currentStock = 1; // pass the guard below; the real claim happens via SKIP LOCKED
-            } catch (SQLException sqlEx) {
-                throw new RuntimeException("Please try again");
-            } finally {
-                fallbackCm.closeConnection();
-            }
+            currentStock = 1; // pass the guard below; the real claim happens via SKIP LOCKED
         } else if (currentStock < 0) {
             try (redis.clients.jedis.Jedis jedis = scheduler.db.RedisManager.getJedis()) {
                 jedis.incr(redisKey); // Revert the negative count
@@ -124,54 +108,54 @@ public class ReservationService {
 
                 // 1. Claim a vaccine dose and mark it reserved in one statement
                 String getDose = "WITH dose AS (SELECT Dose_id FROM VaccineDoses WHERE Vaccine_name = ? AND Status = 'available' LIMIT 1 FOR UPDATE SKIP LOCKED) UPDATE VaccineDoses d SET Status = 'reserved' FROM dose WHERE d.Dose_id = dose.Dose_id RETURNING d.Dose_id";
-                PreparedStatement doseStatement = con.prepareStatement(getDose);
-                doseStatement.setString(1, vaccineName);
-                ResultSet doseResult = doseStatement.executeQuery();
-                if (!doseResult.next()) {
-                    doseResult.close();
-                    doseStatement.close();
-                    con.rollback();
-                    throw new RuntimeException("Not enough available doses");
+                int doseId;
+                try (PreparedStatement doseStatement = con.prepareStatement(getDose)) {
+                    doseStatement.setString(1, vaccineName);
+                    try (ResultSet doseResult = doseStatement.executeQuery()) {
+                        if (!doseResult.next()) {
+                            con.rollback();
+                            throw new RuntimeException("Not enough available doses");
+                        }
+                        doseId = doseResult.getInt("Dose_id");
+                    }
                 }
-                int doseId = doseResult.getInt("Dose_id");
-                doseResult.close();
-                doseStatement.close();
 
                 // 2. Select caregiver and remove availability in one statement
                 String getCaregiver = "WITH avail AS (SELECT Time, Username FROM Availabilities WHERE Time = ? ORDER BY Username LIMIT 1 FOR UPDATE SKIP LOCKED) DELETE FROM Availabilities a USING avail WHERE a.Time = avail.Time AND a.Username = avail.Username RETURNING a.Username";
-                PreparedStatement caregiverStatement = con.prepareStatement(getCaregiver);
-                caregiverStatement.setDate(1, d);
-                ResultSet caregiverResult = caregiverStatement.executeQuery();
-                if (!caregiverResult.next()) {
-                    caregiverResult.close();
-                    caregiverStatement.close();
-                    con.rollback();
-                    throw new RuntimeException("No caregiver is available");
+                String assignedCaregiver;
+                try (PreparedStatement caregiverStatement = con.prepareStatement(getCaregiver)) {
+                    caregiverStatement.setDate(1, d);
+                    try (ResultSet caregiverResult = caregiverStatement.executeQuery()) {
+                        if (!caregiverResult.next()) {
+                            con.rollback();
+                            throw new RuntimeException("No caregiver is available");
+                        }
+                        assignedCaregiver = caregiverResult.getString("Username");
+                    }
                 }
-                String assignedCaregiver = caregiverResult.getString("Username");
-                caregiverResult.close();
-                caregiverStatement.close();
 
                 try {
                     String addReservations = "INSERT INTO Reservations (Patient_name, Caregiver_name, Vaccine_name, Dose_id, Time) VALUES (?, ?, ?, ?, ?)";
-                    PreparedStatement addStatement = con.prepareStatement(addReservations, java.sql.Statement.RETURN_GENERATED_KEYS);
-                    addStatement.setString(1, UserContext.getPatient().getUsername());
-                    addStatement.setString(2, assignedCaregiver);
-                    addStatement.setString(3, vaccineName);
-                    addStatement.setInt(4, doseId);
-                    addStatement.setDate(5, d);
-                    addStatement.executeUpdate();
+                    try (PreparedStatement addStatement = con.prepareStatement(addReservations, java.sql.Statement.RETURN_GENERATED_KEYS)) {
+                        addStatement.setString(1, UserContext.getPatient().getUsername());
+                        addStatement.setString(2, assignedCaregiver);
+                        addStatement.setString(3, vaccineName);
+                        addStatement.setInt(4, doseId);
+                        addStatement.setDate(5, d);
+                        addStatement.executeUpdate();
 
-                    ResultSet generatedKeys = addStatement.getGeneratedKeys();
-                    int currentId = 0;
-                    if (generatedKeys.next()) {
-                        currentId = generatedKeys.getInt(1);
+                        try (ResultSet generatedKeys = addStatement.getGeneratedKeys()) {
+                            int currentId = 0;
+                            if (generatedKeys.next()) {
+                                currentId = generatedKeys.getInt(1);
+                            }
+                            String resMsg = "Appointment ID "+ currentId + ", Caregiver username " + assignedCaregiver;
+
+                            con.commit();
+                            reserveSuccess = true; // Mark as success!
+                            return resMsg;
+                        }
                     }
-                    String resMsg = "Appointment ID "+ currentId + ", Caregiver username " + assignedCaregiver;
-
-                    con.commit();
-                    reserveSuccess = true; // Mark as success!
-                    return resMsg;
                 } catch (SQLException e) {
                     con.rollback();
                     throw e;
@@ -213,65 +197,70 @@ public class ReservationService {
         try {
             con.setAutoCommit(false);
             String getAppointment = "SELECT R.Appointment_id, R.Patient_name, R.Caregiver_name, R.Vaccine_name, R.Dose_id, R.Time FROM Reservations as R WHERE R.Appointment_id = ? FOR UPDATE";
-            PreparedStatement statement = con.prepareStatement(getAppointment);
-            statement.setInt(1, appId);
-            ResultSet result = statement.executeQuery();
-            if (result.next()) {
-                String patientName = result.getString("Patient_name");
-                String caregiverName = result.getString("Caregiver_name");
-                String vaccineName = result.getString("Vaccine_name");
-                int doseId = result.getInt("Dose_id");
-                Date time = result.getDate("Time");
-                
-                result.close();
-                statement.close();
-                
-                if (UserContext.getPatient() != null && !UserContext.getPatient().getUsername().equals(patientName)) {
-                    throw new RuntimeException("Please try again");
+            String patientName, caregiverName, vaccineName;
+            int doseId;
+            Date time;
+            try (PreparedStatement statement = con.prepareStatement(getAppointment)) {
+                statement.setInt(1, appId);
+                try (ResultSet result = statement.executeQuery()) {
+                    if (!result.next()) {
+                        throw new RuntimeException("Appointment ID " + appointmentId + " does not exist");
+                    }
+                    patientName = result.getString("Patient_name");
+                    caregiverName = result.getString("Caregiver_name");
+                    vaccineName = result.getString("Vaccine_name");
+                    doseId = result.getInt("Dose_id");
+                    time = result.getDate("Time");
                 }
-                if (UserContext.getCaregiver() != null && !UserContext.getCaregiver().getUsername().equals(caregiverName)) {
-                    throw new RuntimeException("Please try again");
-                }
+            }
 
-                try {
-                    String deleteReservation = "DELETE FROM Reservations as R WHERE R.Appointment_id = ?";
-                    PreparedStatement deleteStatement = con.prepareStatement(deleteReservation);
+            if (UserContext.getPatient() != null && !UserContext.getPatient().getUsername().equals(patientName)) {
+                throw new RuntimeException("Please try again");
+            }
+            if (UserContext.getCaregiver() != null && !UserContext.getCaregiver().getUsername().equals(caregiverName)) {
+                throw new RuntimeException("Please try again");
+            }
+
+            try {
+                String deleteReservation = "DELETE FROM Reservations as R WHERE R.Appointment_id = ?";
+                try (PreparedStatement deleteStatement = con.prepareStatement(deleteReservation)) {
                     deleteStatement.setInt(1, appId);
                     deleteStatement.executeUpdate();
-                    
-                    // Restore the specific dose to available (replaces UPDATE vaccines SET Doses = Doses + 1)
-                    String restoreDose = "UPDATE VaccineDoses SET Status = 'available' WHERE Dose_id = ?";
-                    PreparedStatement restoreStmt = con.prepareStatement(restoreDose);
+                }
+                
+                // Restore the specific dose to available (replaces UPDATE vaccines SET Doses = Doses + 1)
+                String restoreDose = "UPDATE VaccineDoses SET Status = 'available' WHERE Dose_id = ?";
+                try (PreparedStatement restoreStmt = con.prepareStatement(restoreDose)) {
                     restoreStmt.setInt(1, doseId);
                     restoreStmt.executeUpdate();
-                    
-                    String addAvailability = "INSERT INTO Availabilities VALUES (?, ?)";
-                    PreparedStatement addStatement = con.prepareStatement(addAvailability);
+                }
+                
+                String addAvailability = "INSERT INTO Availabilities VALUES (?, ?)";
+                try (PreparedStatement addStatement = con.prepareStatement(addAvailability)) {
                     addStatement.setDate(1, time);
                     addStatement.setString(2, caregiverName);
                     addStatement.executeUpdate();
-
-                    con.commit();
-
-                    // Sync Redis cache with restored dose
-                    try (redis.clients.jedis.Jedis jedis = scheduler.db.RedisManager.getJedis()) {
-                        String redisKey = "vaccine:" + vaccineName + ":doses";
-                        jedis.incr(redisKey);
-                    } catch (Exception redisEx) {
-                        // Redis update is best-effort; DB is the source of truth
-                    }
-
-                    return "Appointment ID " + appointmentId + " has been successfully canceled";
-                } catch (SQLException e) {
-                    con.rollback();
-                    throw e;
                 }
-            } else {
-                throw new RuntimeException("Appointment ID " + appointmentId + " does not exist");
+
+                con.commit();
+
+                // Sync Redis cache with restored dose
+                try (redis.clients.jedis.Jedis jedis = scheduler.db.RedisManager.getJedis()) {
+                    String redisKey = "vaccine:" + vaccineName + ":doses";
+                    jedis.incr(redisKey);
+                } catch (Exception redisEx) {
+                    // Redis update is best-effort; DB is the source of truth
+                }
+
+                return "Appointment ID " + appointmentId + " has been successfully canceled";
+            } catch (SQLException e) {
+                con.rollback();
+                throw e;
             }
         } catch (SQLException e) {
             throw new RuntimeException("Please try again");
         } finally {
+            try { con.setAutoCommit(true); } catch (SQLException ex) {}
             cm.closeConnection();
         }
     }
@@ -286,24 +275,27 @@ public class ReservationService {
 
         List<String> res = new ArrayList<>();
         try {
-            PreparedStatement statement;
+            String query;
+            String username;
             if (UserContext.getPatient() != null) {
-                String getAppointments = "SELECT R.Appointment_id, R.Vaccine_name, R.Time, R.Caregiver_name as Name FROM Reservations as R WHERE R.Patient_name = ? ORDER BY R.Appointment_id";
-                statement = con.prepareStatement(getAppointments);
-                statement.setString(1, UserContext.getPatient().getUsername());
+                query = "SELECT R.Appointment_id, R.Vaccine_name, R.Time, R.Caregiver_name as Name FROM Reservations as R WHERE R.Patient_name = ? ORDER BY R.Appointment_id";
+                username = UserContext.getPatient().getUsername();
             } else {
-                String getAppointments = "SELECT R.Appointment_id, R.Vaccine_name, R.Time, R.Patient_name as Name FROM Reservations as R WHERE R.Caregiver_name = ? ORDER BY R.Appointment_id";
-                statement = con.prepareStatement(getAppointments);
-                statement.setString(1, UserContext.getCaregiver().getUsername());    
+                query = "SELECT R.Appointment_id, R.Vaccine_name, R.Time, R.Patient_name as Name FROM Reservations as R WHERE R.Caregiver_name = ? ORDER BY R.Appointment_id";
+                username = UserContext.getCaregiver().getUsername();
             }
-            ResultSet result = statement.executeQuery();
-            boolean hasAppointments = false;
-            while (result.next()) {
-                hasAppointments = true;
-                res.add(result.getInt("Appointment_id") + " " + result.getString("Vaccine_name") + " " + result.getDate("Time") + " " + result.getString("Name"));
-            }
-            if (!hasAppointments) {
-                res.add("No appointments scheduled");
+            try (PreparedStatement statement = con.prepareStatement(query)) {
+                statement.setString(1, username);
+                try (ResultSet result = statement.executeQuery()) {
+                    boolean hasAppointments = false;
+                    while (result.next()) {
+                        hasAppointments = true;
+                        res.add(result.getInt("Appointment_id") + " " + result.getString("Vaccine_name") + " " + result.getDate("Time") + " " + result.getString("Name"));
+                    }
+                    if (!hasAppointments) {
+                        res.add("No appointments scheduled");
+                    }
+                }
             }
         } catch (SQLException e) {
             throw new RuntimeException("Please try again");

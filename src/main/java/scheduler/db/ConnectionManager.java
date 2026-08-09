@@ -43,7 +43,7 @@ public class ConnectionManager {
             // Retrieve connection from the pool
             con = dataSource.getConnection();
         } catch (SQLException e) {
-            e.printStackTrace();
+            throw new RuntimeException("Failed to get connection from pool", e);
         }
         return con;
     }

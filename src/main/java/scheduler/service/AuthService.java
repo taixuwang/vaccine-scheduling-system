@@ -53,22 +53,22 @@ public class AuthService {
         Connection con = cm.createConnection();
         try {
             String selectUsername = "SELECT Username FROM Patients WHERE Username = ?";
-            PreparedStatement checkStmt = con.prepareStatement(selectUsername);
-            checkStmt.setString(1, username);
-            ResultSet rs = checkStmt.executeQuery();
-            if (rs.next()) {
-                throw new RuntimeException("Username taken, try again");
+            try (PreparedStatement checkStmt = con.prepareStatement(selectUsername)) {
+                checkStmt.setString(1, username);
+                try (ResultSet rs = checkStmt.executeQuery()) {
+                    if (rs.next()) {
+                        throw new RuntimeException("Username taken, try again");
+                    }
+                }
             }
-            rs.close();
-            checkStmt.close();
 
             String addPatient = "INSERT INTO Patients VALUES (?, ?, ?)";
-            PreparedStatement insertStmt = con.prepareStatement(addPatient);
-            insertStmt.setString(1, username);
-            insertStmt.setBytes(2, salt);
-            insertStmt.setBytes(3, hash);
-            insertStmt.executeUpdate();
-            insertStmt.close();
+            try (PreparedStatement insertStmt = con.prepareStatement(addPatient)) {
+                insertStmt.setString(1, username);
+                insertStmt.setBytes(2, salt);
+                insertStmt.setBytes(3, hash);
+                insertStmt.executeUpdate();
+            }
             
             return "Created user " + username;
         } catch (SQLException e) {
@@ -90,22 +90,22 @@ public class AuthService {
         Connection con = cm.createConnection();
         try {
             String selectUsername = "SELECT Username FROM Caregivers WHERE Username = ?";
-            PreparedStatement checkStmt = con.prepareStatement(selectUsername);
-            checkStmt.setString(1, username);
-            ResultSet rs = checkStmt.executeQuery();
-            if (rs.next()) {
-                throw new RuntimeException("Username taken, try again!");
+            try (PreparedStatement checkStmt = con.prepareStatement(selectUsername)) {
+                checkStmt.setString(1, username);
+                try (ResultSet rs = checkStmt.executeQuery()) {
+                    if (rs.next()) {
+                        throw new RuntimeException("Username taken, try again!");
+                    }
+                }
             }
-            rs.close();
-            checkStmt.close();
 
             String addCaregiver = "INSERT INTO Caregivers VALUES (?, ?, ?)";
-            PreparedStatement insertStmt = con.prepareStatement(addCaregiver);
-            insertStmt.setString(1, username);
-            insertStmt.setBytes(2, salt);
-            insertStmt.setBytes(3, hash);
-            insertStmt.executeUpdate();
-            insertStmt.close();
+            try (PreparedStatement insertStmt = con.prepareStatement(addCaregiver)) {
+                insertStmt.setString(1, username);
+                insertStmt.setBytes(2, salt);
+                insertStmt.setBytes(3, hash);
+                insertStmt.executeUpdate();
+            }
 
             return "Created user " + username;
         } catch (SQLException e) {
@@ -116,32 +116,28 @@ public class AuthService {
     }
 
     public String loginPatient(String username, String password) {
-        if (UserContext.getPatient() != null || UserContext.getCaregiver() != null) {
-            throw new RuntimeException("User already logged in, try again");
-        }
 
         ConnectionManager cm = new ConnectionManager();
         Connection con = cm.createConnection();
         try {
             String getPatient = "SELECT Salt, Hash FROM Patients WHERE Username = ?";
-            PreparedStatement statement = con.prepareStatement(getPatient);
-            statement.setString(1, username);
-            ResultSet resultSet = statement.executeQuery();
-            
-            if (resultSet.next()) {
-                byte[] salt = resultSet.getBytes("Salt");
-                byte[] hash = Util.trim(resultSet.getBytes("Hash"));
-                byte[] calculatedHash = Util.generateHash(password, salt);
-                
-                if (!Arrays.equals(hash, calculatedHash)) {
-                    throw new RuntimeException("Login patient failed");
-                } else {
-                    Patient patient = new Patient.PatientBuilder(username, salt, hash).build();
-                    UserContext.setPatient(patient);
-                    return JwtUtil.generateToken(username, "Patient");
+            try (PreparedStatement statement = con.prepareStatement(getPatient)) {
+                statement.setString(1, username);
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    if (resultSet.next()) {
+                        byte[] salt = resultSet.getBytes("Salt");
+                        byte[] hash = Util.trim(resultSet.getBytes("Hash"));
+                        byte[] calculatedHash = Util.generateHash(password, salt);
+                        
+                        if (!Arrays.equals(hash, calculatedHash)) {
+                            throw new RuntimeException("Login patient failed");
+                        } else {
+                            return JwtUtil.generateToken(username, "Patient");
+                        }
+                    } else {
+                        throw new RuntimeException("Login patient failed");
+                    }
                 }
-            } else {
-                throw new RuntimeException("Login patient failed");
             }
         } catch (SQLException e) {
             throw new RuntimeException("Login patient failed");
@@ -151,32 +147,28 @@ public class AuthService {
     }
 
     public String loginCaregiver(String username, String password) {
-        if (UserContext.getCaregiver() != null || UserContext.getPatient() != null) {
-            throw new RuntimeException("User already logged in.");
-        }
 
         ConnectionManager cm = new ConnectionManager();
         Connection con = cm.createConnection();
         try {
             String getCaregiver = "SELECT Salt, Hash FROM Caregivers WHERE Username = ?";
-            PreparedStatement statement = con.prepareStatement(getCaregiver);
-            statement.setString(1, username);
-            ResultSet resultSet = statement.executeQuery();
-            
-            if (resultSet.next()) {
-                byte[] salt = resultSet.getBytes("Salt");
-                byte[] hash = Util.trim(resultSet.getBytes("Hash"));
-                byte[] calculatedHash = Util.generateHash(password, salt);
-                
-                if (!Arrays.equals(hash, calculatedHash)) {
-                    throw new RuntimeException("Login failed.");
-                } else {
-                    Caregiver caregiver = new Caregiver.CaregiverBuilder(username, salt, hash).build();
-                    UserContext.setCaregiver(caregiver);
-                    return JwtUtil.generateToken(username, "Caregiver");
+            try (PreparedStatement statement = con.prepareStatement(getCaregiver)) {
+                statement.setString(1, username);
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    if (resultSet.next()) {
+                        byte[] salt = resultSet.getBytes("Salt");
+                        byte[] hash = Util.trim(resultSet.getBytes("Hash"));
+                        byte[] calculatedHash = Util.generateHash(password, salt);
+                        
+                        if (!Arrays.equals(hash, calculatedHash)) {
+                            throw new RuntimeException("Login failed.");
+                        } else {
+                            return JwtUtil.generateToken(username, "Caregiver");
+                        }
+                    } else {
+                        throw new RuntimeException("Login failed.");
+                    }
                 }
-            } else {
-                throw new RuntimeException("Login failed.");
             }
         } catch (SQLException e) {
             throw new RuntimeException("Login failed.");
