@@ -69,11 +69,11 @@ public class ReservationService {
     }
 
     public String reserve(String date, String vaccineName) {
-        if (UserContext.getCaregiver() != null) {
-            throw new RuntimeException("Please login as a patient");
-        }
         if (UserContext.getPatient() == null) {
             throw new RuntimeException("Please login first");
+        }
+        if (UserContext.getCaregiver() != null) {
+            throw new RuntimeException("Please login as a patient");
         }
 
         // 1. Redis Cache Interception (atomic claim when Redis is up)
