@@ -46,6 +46,18 @@ pip3 install requests aiohttp
 python3 src/test/run_all.py
 ```
 
+### Running Load Tests
+
+A throughput and latency load test script is available to benchmark the performance of the system under sustained load. This test measures the requests per second (req/s), latency distributions, and error rates across critical endpoints.
+
+```bash
+# Run the load test with default settings (20 threads, 10 seconds per endpoint)
+python3 src/test/test_throughput.py
+
+# Run with custom parameters
+python3 src/test/test_throughput.py --threads 50 --duration 15
+```
+
 ### Stopping the Cluster
 
 ```bash
