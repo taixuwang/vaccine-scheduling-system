@@ -1,394 +1,193 @@
-"""
-Concurrency Tests
-=================
-Tests the system's behavior under concurrent load, focusing on data consistency.
+"""Concurrent reservation and cancellation checks without global data cleanup."""
 
-Testing aspects:
-  1. Race condition: N patients compete for M doses (M < N)
-     - Exactly M reservations should succeed
-     - Exactly N-M should be rejected
-     - No double-booking of caregivers
-     - No overselling of vaccine doses
-  2. Concurrent cancellations do not corrupt state
-  3. Throughput and latency under concurrent load
-  4. Redis cache consistency: after all operations, Redis count matches DB
-  5. No duplicate appointment IDs are generated
-
-Usage:
-  1. Start the application (docker-compose up --build)
-  2. Run: python src/test/test_concurrency.py
-  3. Optional flags:
-     --patients N    Number of concurrent patients (default: 30)
-     --doses M       Number of available vaccine doses (default: 10)
-     --caregivers K  Number of caregivers with availability (default: 15)
-"""
-
-import sys
-import os
-import re
-import time
-import argparse
-import subprocess
 import asyncio
-import aiohttp
-import resource
+import os
+import time
 from collections import Counter
-sys.path.insert(0, os.path.dirname(__file__))
+from dataclasses import dataclass
 
-# Raise fd soft limit so high-concurrency aiohttp sockets don't hit EMFILE.
-# macOS GUI-launched shells default to 256; hard limit is unlimited here.
-try:
-    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-    target = 65536 if hard == resource.RLIM_INFINITY else min(65536, hard)
-    if soft < target:
-        resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
-except Exception:
-    pass
+import aiohttp
 
-from test_config import *
-
-TEST_DATE = "2026-09-01"
-NUM_VACCINES = 5
-TEST_VACCINES = [f"ConcurrVax{i}" for i in range(NUM_VACCINES)]
+from test_config import (
+    IntegrationTestCase,
+    empty_future_date,
+    positive_int,
+    require_status,
+    reservation_details,
+    run_module_cli,
+    schedule_sections,
+)
 
 
-def cleanup_previous_data():
-    """Clean up residual data from previous test runs (not counted in timing)."""
-    print("\n--- Cleanup: clearing residual data from previous runs ---")
-
-    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    compose_file = os.path.join(project_root, "docker-compose.yml")
-
-    # 1. Truncate all tables in PostgreSQL
-    sql = "TRUNCATE Reservations, Availabilities, Patients, Caregivers, Vaccines, VaccineDoses CASCADE;"
-    try:
-        subprocess.run(
-            ["docker", "compose", "-f", compose_file, "exec", "-T", "postgres",
-             "psql", "-U", "postgres", "-d", "scheduler_db", "-c", sql],
-            capture_output=True, check=True
-        )
-        print("  PostgreSQL tables cleared.")
-    except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        print(f"  [WARNING] PostgreSQL cleanup skipped: {e}")
-
-    # 2. Flush Redis
-    try:
-        subprocess.run(
-            ["docker", "compose", "-f", compose_file, "exec", "-T", "redis",
-             "redis-cli", "FLUSHALL"],
-            capture_output=True, check=True
-        )
-        print("  Redis cache cleared.")
-    except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        print(f"  [WARNING] Redis cleanup skipped: {e}")
+PATIENTS_ENV = "VACCINE_TEST_PATIENTS"
+DOSES_ENV = "VACCINE_TEST_DOSES"
+CAREGIVERS_ENV = "VACCINE_TEST_CAREGIVERS"
+RUNS_ENV = "VACCINE_TEST_RUNS"
 
 
-def setup_concurrent_test(suffix, num_patients, num_doses, num_caregivers):
-    """
-    Set up test data:
-      - Create num_caregivers caregivers, each with availability on TEST_DATE
-      - Add num_doses vaccine doses
-      - Create num_patients patients and collect their JWT tokens
-    Returns: list of patient JWT tokens
-    """
-    print(f"\n--- Setup: {num_caregivers} caregivers, {num_doses} doses, {num_patients} patients ---")
-
-    def retry(fn, *args, max_retries=3, **kwargs):
-        """Retry an API call up to max_retries times."""
-        resp = None
-        for attempt in range(max_retries):
-            resp = fn(*args, **kwargs)
-            if resp.status_code == 200:
-                return resp
-            time.sleep(0.1 * (attempt + 1))
-        return resp
-
-    # Create caregivers and upload availability (with retry)
-    for i in range(num_caregivers):
-        cg_name = f"cc_cg{i}_{suffix}"
-        retry(create_caregiver, cg_name)
-        cg_token, _ = login_caregiver(cg_name)
-        retry(upload_availability, cg_token, TEST_DATE)
-        logout(cg_token)
-
-    # Add vaccine doses split across NUM_VACCINES types (use first caregiver)
-    cg_token, _ = login_caregiver(f"cc_cg0_{suffix}")
-    doses_per_vaccine = num_doses // NUM_VACCINES
-    for v in TEST_VACCINES:
-        resp = retry(add_doses, cg_token, v, doses_per_vaccine)
-        if resp.status_code != 200:
-            print(f"  [WARNING] add_doses failed for {v}: HTTP {resp.status_code}, {resp.json()}")
-    logout(cg_token)
-
-    # Create patients and collect tokens
-    tokens = []
-    for i in range(num_patients):
-        pat_name = f"cc_pat{i}_{suffix}"
-        retry(create_patient, pat_name)
-        token, _ = login_patient(pat_name)
-        tokens.append(token)
-        logout(token)
-
-    print(f"  Setup complete.")
-    return tokens
+def add_concurrency_arguments(parser):
+    parser.add_argument("--patients", type=positive_int,
+                        default=positive_int(os.environ.get(PATIENTS_ENV, 30)))
+    parser.add_argument("--doses", type=positive_int,
+                        default=positive_int(os.environ.get(DOSES_ENV, 10)))
+    parser.add_argument("--caregivers", type=positive_int,
+                        default=positive_int(os.environ.get(CAREGIVERS_ENV, 10)))
+    parser.add_argument("--runs", type=positive_int,
+                        default=positive_int(os.environ.get(RUNS_ENV, 1)))
 
 
-async def test_concurrent_reservations(t, suffix, tokens, expected_successes):
-    """
-    All patients attempt to reserve simultaneously (async I/O via aiohttp to bypass GIL).
-    Validates:
-      - Exactly expected_successes reservations succeed
-      - No overselling (successes <= available doses)
-      - All appointment IDs are unique
-    """
-    doses_per_vaccine = expected_successes // NUM_VACCINES
-    print(f"\n--- Concurrent Reservations: {len(tokens)} patients racing for {expected_successes} doses "
-          f"({NUM_VACCINES} vaccines x {doses_per_vaccine} doses each) ---")
+def configure_concurrency(args):
+    if args.patients < args.doses or args.caregivers < args.doses:
+        raise ValueError("patients and caregivers must each be at least the dose count")
+    for key, value in ((PATIENTS_ENV, args.patients), (DOSES_ENV, args.doses),
+                       (CAREGIVERS_ENV, args.caregivers), (RUNS_ENV, args.runs)):
+        os.environ[key] = str(value)
 
-    async def attempt_reserve(session, idx_token):
-        idx, token = idx_token
-        vaccine = TEST_VACCINES[idx % NUM_VACCINES]
-        start = time.time()
-        async with session.post(
-            f"{BASE_URL}/api/reservation/reserve",
-            json={"date": TEST_DATE, "vaccine": vaccine},
-            headers={"Authorization": f"Bearer {token}"},
-        ) as resp:
-            body = await resp.json()
-            elapsed = time.time() - start
-            return resp.status, body, elapsed, token, vaccine
 
-    # limit=0 disables the per-host connection cap so all requests can be in-flight at once
+@dataclass
+class Attempt:
+    token: str
+    status_code: int
+    body: object
+    elapsed: float
+    error: str = ""
+
+    def json(self):
+        if not isinstance(self.body, dict):
+            raise ValueError("response is not a JSON object")
+        return self.body
+
+
+async def post_concurrently(settings, requests_to_send):
+    """Return every response, including transport errors, without dropping tasks."""
+    timeout = aiohttp.ClientTimeout(total=settings.timeout)
     connector = aiohttp.TCPConnector(limit=0)
-    timeout = aiohttp.ClientTimeout(total=120)
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+        async def send(token, path, payload):
+            start = time.monotonic()
+            try:
+                async with session.post(
+                    settings.base_url + path, headers={"Authorization": f"Bearer {token}"},
+                    **payload,
+                ) as response:
+                    try:
+                        body = await response.json(content_type=None)
+                    except (ValueError, aiohttp.ContentTypeError):
+                        body = None
+                    return Attempt(token, response.status, body, time.monotonic() - start)
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                return Attempt(token, 0, None, time.monotonic() - start, type(exc).__name__)
 
-    start_time = time.time()
-    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-        raw_results = await asyncio.gather(*(attempt_reserve(session, (i, tok)) for i, tok in enumerate(tokens)))
-    total_time = time.time() - start_time
+        return await asyncio.gather(*(send(*request) for request in requests_to_send))
 
-    results = []
-    latencies = []
-    token_vaccine = {}
-    for status, body, elapsed, token, vaccine in raw_results:
-        results.append((status, body, token))
-        latencies.append(elapsed)
-        token_vaccine[token] = vaccine
 
-    # Analyze results
-    successes = [(s, b, t) for s, b, t in results if s == 200]
-    failures = [(s, b, t) for s, b, t in results if s != 200]
+class ConcurrencyTests(IntegrationTestCase):
+    def test_reservations_do_not_oversell_and_cancellations_restore_capacity(self):
+        patients = positive_int(os.environ.get(PATIENTS_ENV, 30))
+        doses = positive_int(os.environ.get(DOSES_ENV, 10))
+        caregivers = positive_int(os.environ.get(CAREGIVERS_ENV, 10))
+        runs = positive_int(os.environ.get(RUNS_ENV, 1))
+        if patients < doses or caregivers < doses:
+            self.fail("patients and caregivers must each be at least the dose count")
+        for run in range(runs):
+            with self.subTest(run=run + 1):
+                self._run_round(run, patients, doses, caregivers)
 
-    print(f"  Completed in {total_time:.2f}s")
-    print(f"  Successes: {len(successes)}, Failures: {len(failures)}")
+    def _run_round(self, run, patient_count, dose_count, caregiver_count):
+        _, first_patient = self.create_user("patient", f"con_p{run}_0")
+        day = empty_future_date(self.client, first_patient)
+        caregiver_names = set()
+        caregiver_tokens = []
+        for index in range(caregiver_count):
+            name, token = self.create_user("caregiver", f"con_c{run}_{index}")
+            caregiver_names.add(name)
+            caregiver_tokens.append(token)
+            require_status(self.client.upload_availability(token, day), 200, "upload availability")
 
-    # ── Correctness checks ──
-    t.assert_eq(
-        f"Exactly {expected_successes} reservations succeed",
-        len(successes), expected_successes
-    )
+        vaccine_count = min(5, dose_count)
+        vaccines = [self.name(f"con_vaccine{run}_{index}") for index in range(vaccine_count)]
+        doses_by_vaccine = Counter(vaccines[index % vaccine_count] for index in range(dose_count))
+        for vaccine, count in doses_by_vaccine.items():
+            require_status(self.client.add_doses(caregiver_tokens[0], vaccine, count),
+                           200, "add concurrent test doses")
+        tokens = [first_patient]
+        for index in range(1, patient_count):
+            _, token = self.create_user("patient", f"con_p{run}_{index}")
+            tokens.append(token)
 
-    t.assert_true(
-        "No overselling (successes <= available doses)",
-        len(successes) <= expected_successes,
-        f"successes={len(successes)}"
-    )
+        visible_caregivers, visible_doses = schedule_sections(self.client.search(first_patient, day))
+        self.assertEqual(visible_caregivers, caregiver_names,
+                         "the selected date contains another caregiver; use an isolated instance")
+        for vaccine, count in doses_by_vaccine.items():
+            self.assertEqual(visible_doses.get(vaccine), count)
 
-    # Per-vaccine success count (each vaccine should have exactly doses_per_vaccine successes)
-    v_counts = Counter(token_vaccine[tok] for _, _, tok in successes)
-    for v in TEST_VACCINES:
-        t.assert_eq(
-            f"Exactly {doses_per_vaccine} reservations succeed for {v}",
-            v_counts.get(v, 0), doses_per_vaccine
+        requests_to_send = [
+            (token, "/api/reservation/reserve",
+             {"json": {"date": day, "vaccine": vaccines[index % vaccine_count]}})
+            for index, token in enumerate(tokens)
+        ]
+        started = time.monotonic()
+        results = asyncio.run(post_concurrently(self.settings, requests_to_send))
+        elapsed = time.monotonic() - started
+
+        successes = []
+        problems = []
+        for request, result in zip(requests_to_send, results):
+            if result.error:
+                problems.append(f"transport error: {result.error}")
+            elif result.status_code == 200:
+                try:
+                    appointment_id, caregiver = reservation_details(result)
+                    self.active_appointments[appointment_id] = result.token
+                    successes.append((appointment_id, caregiver, result.token,
+                                      request[2]["json"]["vaccine"]))
+                except AssertionError as exc:
+                    problems.append(str(exc))
+            elif 400 <= result.status_code < 500 and isinstance(result.body, dict):
+                message = str(result.body.get("message", "")).lower()
+                if "not enough" not in message and "no caregiver" not in message:
+                    problems.append(f"unexpected rejection: {message}")
+            else:
+                problems.append(f"unexpected HTTP {result.status_code} or malformed response")
+
+        print(f"  concurrency round {run + 1}: {len(successes)}/{len(results)} reservations "
+              f"in {elapsed:.2f}s", flush=True)
+        self.assertFalse(problems, "; ".join(problems[:5]))
+        self.assertEqual(len(successes), dose_count, "available doses should be fully booked")
+        ids = [appointment_id for appointment_id, _, _, _ in successes]
+        assigned = [caregiver for _, caregiver, _, _ in successes]
+        self.assertEqual(len(set(ids)), len(successes), "appointment IDs must be unique")
+        self.assertEqual(len(set(assigned)), len(successes), "caregivers must not be double-booked")
+        self.assertTrue(set(assigned).issubset(caregiver_names))
+        self.assertEqual(Counter(vaccine for _, _, _, vaccine in successes), doses_by_vaccine,
+                         "each vaccine should be booked up to its own available count")
+
+        cancel_requests = [
+            (token, "/api/reservation/cancel", {"params": {"appointmentId": appointment_id}})
+            for appointment_id, _, token, _ in successes
+        ]
+        cancelled = asyncio.run(post_concurrently(self.settings, cancel_requests))
+        cancellation_errors = []
+        for (appointment_id, _, _, _), result in zip(successes, cancelled):
+            try:
+                if result.error:
+                    raise AssertionError(f"transport error: {result.error}")
+                require_status(result, 200, f"cancel appointment {appointment_id}")
+                del self.active_appointments[appointment_id]
+            except AssertionError as exc:
+                cancellation_errors.append(str(exc))
+        self.assertFalse(cancellation_errors, "; ".join(cancellation_errors[:5]))
+
+        available, visible_doses = schedule_sections(self.client.search(first_patient, day))
+        self.assertEqual(available, caregiver_names)
+        for vaccine, count in doses_by_vaccine.items():
+            self.assertEqual(visible_doses.get(vaccine), count)
+        appointment_id, assigned_caregiver = self.track_reservation(
+            self.client.reserve(first_patient, day, vaccines[0]), first_patient
         )
+        self.assertIn(assigned_caregiver, caregiver_names)
+        self.cancel_tracked(appointment_id)
 
-    # Check for unique appointment IDs
-    cancel_pairs = []
-    for _, body, token in successes:
-        msg = body.get("data", "")
-        match = re.search(r"Appointment ID (\d+)", msg)
-        if match:
-            cancel_pairs.append((token, match.group(1)))
-            
-    appointment_ids = [aid for _, aid in cancel_pairs]
-
-    unique_ids = set(appointment_ids)
-    t.assert_eq(
-        "All appointment IDs are unique",
-        len(unique_ids), len(appointment_ids)
-    )
-
-    # Check for unique caregiver assignments (no double-booking)
-    caregivers_assigned = []
-    for _, body, _ in successes:
-        msg = body.get("data", "")
-        match = re.search(r"Caregiver username (\S+)", msg)
-        if match:
-            caregivers_assigned.append(match.group(1))
-
-    unique_caregivers = set(caregivers_assigned)
-    t.assert_eq(
-        "No caregiver is double-booked",
-        len(unique_caregivers), len(caregivers_assigned)
-    )
-
-    # ── Performance metrics ──
-    latencies.sort()
-    avg_latency = sum(latencies) / len(latencies)
-    p50 = latencies[len(latencies) // 2]
-    p95 = latencies[int(len(latencies) * 0.95)]
-    p99 = latencies[int(len(latencies) * 0.99)]
-    rps = len(results) / total_time
-
-    print(f"\n  Performance:")
-    print(f"    Throughput:    {rps:.1f} req/s")
-    print(f"    Avg latency:   {avg_latency*1000:.0f}ms")
-    print(f"    P50 latency:   {p50*1000:.0f}ms")
-    print(f"    P95 latency:   {p95*1000:.0f}ms")
-    print(f"    P99 latency:   {p99*1000:.0f}ms")
-
-    return cancel_pairs, {
-        'rps': rps,
-        'avg_latency': avg_latency,
-        'p50': p50,
-        'p95': p95,
-        'p99': p99,
-    }
-
-
-async def test_concurrent_cancellations(t, suffix, cancel_pairs):
-    """
-    Cancel all successful reservations concurrently (async I/O via aiohttp).
-    Validates that all cancellations succeed without errors.
-    """
-    if not cancel_pairs:
-        print("\n--- Concurrent Cancellations: SKIPPED (no appointments) ---")
-        return
-
-    print(f"\n--- Concurrent Cancellations: {len(cancel_pairs)} appointments ---")
-
-    async def attempt_cancel(session, pair):
-        token, aid = pair
-        async with session.post(
-            f"{BASE_URL}/api/reservation/cancel",
-            params={"appointmentId": aid},
-            headers={"Authorization": f"Bearer {token}"},
-        ) as resp:
-            body = await resp.json()
-            return resp.status, body
-
-    connector = aiohttp.TCPConnector(limit=0)
-    timeout = aiohttp.ClientTimeout(total=120)
-    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-        results = await asyncio.gather(*(attempt_cancel(session, p) for p in cancel_pairs))
-
-    successes = [r for r in results if r[0] == 200]
-    failures = [r for r in results if r[0] != 200]
-
-    t.assert_eq(
-        "All cancellations succeed",
-        len(successes), len(cancel_pairs)
-    )
-
-    if failures:
-        for status, body in failures[:3]:  # Show first 3 failures
-            print(f"    Cancel failure: HTTP {status}, {body}")
-
-
-def test_no_race_after_cancel_and_rebook(t, suffix, cancel_pairs, num_doses, num_caregivers):
-    """
-    After cancelling all appointments, re-add availability and try booking again.
-    This tests that cancelled doses are properly restored.
-    """
-    print(f"\n--- Re-book After Cancellation ---")
-
-    # Re-add caregiver availability (was consumed by first round)
-    rebooking_date = "2026-09-02"
-    for i in range(num_caregivers):
-        cg_name = f"cc_cg{i}_{suffix}"
-        cg_token, _ = login_caregiver(cg_name)
-        upload_availability(cg_token, rebooking_date)
-        logout(cg_token)
-
-    # Try to reserve with first patient
-    resp = reserve(cancel_pairs[0][0] if cancel_pairs else None, rebooking_date, TEST_VACCINES[0])
-    t.assert_status(
-        "Re-booking after cancellation succeeds (doses were restored)",
-        resp, 200
-    )
-
-
-# ─── Main ────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Concurrency tests for vaccine scheduler")
-    parser.add_argument("--patients", type=int, default=1000, help="Number of concurrent patients")
-    parser.add_argument("--doses", type=int, default=100, help="Number of available vaccine doses")
-    parser.add_argument("--caregivers", type=int, default=100, help="Number of caregivers with availability")
-    parser.add_argument("--runs", type=int, default=10, help="Number of test runs")
-    args = parser.parse_args()
-
-    # Ensure caregivers >= doses (each reservation consumes one caregiver slot)
-    if args.caregivers < args.doses:
-        print(f"[WARNING] caregivers ({args.caregivers}) < doses ({args.doses}). "
-              f"Setting caregivers = doses.")
-        args.caregivers = args.doses
-
-    # Ensure doses is divisible by NUM_VACCINES (even split across vaccine types)
-    if args.doses % NUM_VACCINES != 0:
-        print(f"[WARNING] doses ({args.doses}) not divisible by {NUM_VACCINES}. "
-              f"Rounding down to {args.doses - args.doses % NUM_VACCINES}.")
-        args.doses = args.doses - args.doses % NUM_VACCINES
-
-    t = TestResult("Concurrency Tests")
-
-    print(f"\nConcurrency Tests")
-    print(f"Target: {BASE_URL}")
-    print(f"Config: {args.patients} patients, {args.doses} doses ({NUM_VACCINES} vaccines x {args.doses // NUM_VACCINES} each), {args.caregivers} caregivers, {args.runs} runs")
-    print("=" * 60)
-
-    all_metrics = []
-
-    try:
-        for run_idx in range(args.runs):
-            suffix = random_suffix()
-            print(f"\n{'='*60}")
-            print(f"  Run {run_idx + 1}/{args.runs} (suffix={suffix})")
-            print(f"{'='*60}")
-
-            cleanup_previous_data()
-            tokens = setup_concurrent_test(suffix, args.patients, args.doses, args.caregivers)
-            cancel_pairs, metrics = asyncio.run(test_concurrent_reservations(t, suffix, tokens, args.doses))
-            asyncio.run(test_concurrent_cancellations(t, suffix, cancel_pairs))
-            test_no_race_after_cancel_and_rebook(t, suffix, cancel_pairs, args.doses, args.caregivers)
-
-            all_metrics.append(metrics)
-    except (requests.exceptions.ConnectionError, aiohttp.ClientError) as e:
-        print(f"\n[ERROR] Cannot connect to {BASE_URL}. Is the application running? ({e})")
-        sys.exit(1)
-
-    # ── Trimmed average: remove highest and lowest QPS runs ──
-    if len(all_metrics) >= 3:
-        sorted_by_rps = sorted(all_metrics, key=lambda m: m['rps'])
-        trimmed = sorted_by_rps[1:-1]
-
-        avg_rps = sum(m['rps'] for m in trimmed) / len(trimmed)
-        avg_avg_latency = sum(m['avg_latency'] for m in trimmed) / len(trimmed)
-        avg_p50 = sum(m['p50'] for m in trimmed) / len(trimmed)
-        avg_p95 = sum(m['p95'] for m in trimmed) / len(trimmed)
-        avg_p99 = sum(m['p99'] for m in trimmed) / len(trimmed)
-
-        print(f"\n{'='*60}")
-        print(f"  Trimmed Average ({len(trimmed)} runs, excluded highest & lowest QPS)")
-        print(f"{'='*60}")
-        print(f"  Performance:")
-        print(f"    Throughput:    {avg_rps:.1f} req/s")
-        print(f"    Avg latency:   {avg_avg_latency*1000:.0f}ms")
-        print(f"    P50 latency:   {avg_p50*1000:.0f}ms")
-        print(f"    P95 latency:   {avg_p95*1000:.0f}ms")
-        print(f"    P99 latency:   {avg_p99*1000:.0f}ms")
-    else:
-        print(f"\n[WARNING] Not enough runs for trimmed average (need >= 3, got {len(all_metrics)})")
-
-    success = t.summary()
-    sys.exit(0 if success else 1)
+    run_module_cli(add_concurrency_arguments, configure_concurrency)

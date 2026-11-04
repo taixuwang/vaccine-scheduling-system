@@ -17,7 +17,7 @@ The system is designed for high availability, high concurrency, and scalability:
 - Java 11 or higher
 - Maven
 - Docker and Docker Compose (recommended for deployment)
-- Python 3.x with `requests` and `aiohttp` (for running the integration test suite)
+- Python 3.9+ with the dependencies in `requirements.txt` (for the test suite)
 
 ## Running the Application
 
@@ -34,34 +34,44 @@ docker-compose up --build -d
 ```
 The API will be available at `http://localhost`.
 
-### Running Integration Tests
+### Running Tests
 
-A comprehensive Python test suite is provided in the `src/test/` directory to verify authentication, business logic, and concurrency safety.
+The tests create accounts, availability, and vaccine inventory. Run integration
+and load tests only against a disposable instance: the application has no API
+for deleting these fixtures. The test scripts do not truncate the database or
+flush Redis.
 
 ```bash
-# Install required Python packages
-pip3 install requests aiohttp
+# Install the test dependencies
+python3 -m pip install -r requirements.txt
 
-# Run the complete test suite against the running cluster
-python3 src/test/run_all.py
+# Run offline checks (integration tests are skipped unless explicitly configured)
+python3 -m unittest discover -s src/test -v
+
+# Run integration tests against a running, disposable cluster
+python3 src/test/run_all.py --target http://localhost
 ```
+
+The suite includes regression tests for known backend defects, so it may report
+failures until those defects are fixed. See [the test guide](src/test/README.md)
+for configuration, individual suites, and fixture details.
 
 ### Running Load Tests
 
 A throughput and latency load test script is available to benchmark the performance of the system under sustained load. This test measures the requests per second (req/s), latency distributions, and error rates across critical endpoints.
 
 ```bash
-# Run the load test with default settings (20 threads, 10 seconds per endpoint)
+# Run the load test against a disposable cluster (20 threads, 10 seconds per workload)
 python3 src/test/test_throughput.py
 
-# Run with custom parameters
-python3 src/test/test_throughput.py --threads 50 --duration 15
+# Run with custom parameters and target
+python3 src/test/test_throughput.py --target http://localhost --threads 50 --duration 15
 ```
 
 ### Stopping the Cluster
 
 ```bash
-# Stop and remove containers, networks, and volumes
+# Stop and remove containers and networks
 docker-compose down
 ```
 
