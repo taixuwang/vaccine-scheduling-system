@@ -10,7 +10,6 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.util.Arrays;
 
 @Service
 public class AuthService {
@@ -126,10 +125,9 @@ public class AuthService {
                 try (ResultSet resultSet = statement.executeQuery()) {
                     if (resultSet.next()) {
                         byte[] salt = resultSet.getBytes("Salt");
-                        byte[] hash = Util.trim(resultSet.getBytes("Hash"));
-                        byte[] calculatedHash = Util.generateHash(password, salt);
+                        byte[] hash = resultSet.getBytes("Hash");
                         
-                        if (!Arrays.equals(hash, calculatedHash)) {
+                        if (!Util.verifyPassword(password, salt, hash)) {
                             throw new RuntimeException("Invalid username or password");
                         } else {
                             return JwtUtil.generateToken(username, "Patient");
@@ -157,10 +155,9 @@ public class AuthService {
                 try (ResultSet resultSet = statement.executeQuery()) {
                     if (resultSet.next()) {
                         byte[] salt = resultSet.getBytes("Salt");
-                        byte[] hash = Util.trim(resultSet.getBytes("Hash"));
-                        byte[] calculatedHash = Util.generateHash(password, salt);
+                        byte[] hash = resultSet.getBytes("Hash");
                         
-                        if (!Arrays.equals(hash, calculatedHash)) {
+                        if (!Util.verifyPassword(password, salt, hash)) {
                             throw new RuntimeException("Invalid username or password");
                         } else {
                             return JwtUtil.generateToken(username, "Caregiver");

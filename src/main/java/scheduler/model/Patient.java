@@ -4,7 +4,6 @@ import scheduler.db.ConnectionManager;
 import scheduler.util.Util;
 
 import java.sql.*;
-import java.util.Arrays;
 
 public class Patient {
     private final String username;
@@ -91,12 +90,8 @@ public class Patient {
                 ResultSet resultSet = statement.executeQuery();
                 while (resultSet.next()) {
                     byte[] salt = resultSet.getBytes("Salt");
-                    // we need to call Util.trim() to get rid of the paddings,
-                    // try to remove the use of Util.trim() and you'll see :)
-                    byte[] hash = Util.trim(resultSet.getBytes("Hash"));
-                    // check if the password matches
-                    byte[] calculatedHash = Util.generateHash(password, salt);
-                    if (!Arrays.equals(hash, calculatedHash)) {
+                    byte[] hash = resultSet.getBytes("Hash");
+                    if (!Util.verifyPassword(password, salt, hash)) {
                         return null;
                     } else {
                         this.salt = salt;

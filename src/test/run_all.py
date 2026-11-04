@@ -7,6 +7,7 @@ import unittest
 import test_auth
 import test_concurrency
 import test_harness
+import test_password_hash
 import test_reservation
 from test_config import add_target_arguments, configure_environment
 
@@ -26,7 +27,7 @@ def main(argv=None):
 
     print(f"Target: {settings.base_url}")
     print("Tests create unique accounts, availability and inventory; use a disposable instance.", flush=True)
-    modules = [test_harness, test_auth, test_reservation]
+    modules = [test_harness, test_password_hash, test_auth, test_reservation]
     if not args.skip_concurrency:
         modules.append(test_concurrency)
     loader = unittest.defaultTestLoader

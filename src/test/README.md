@@ -17,6 +17,8 @@ or resets data. Run `python3 -m unittest discover -s src/test -v` for offline
 harness checks; it skips integration tests unless `VACCINE_TEST_BASE_URL` is set.
 Fixture setup assumes the disposable instance permits caregiver registration.
 For HTTPS targets, use a Python build with a supported OpenSSL version.
+The offline password-hash regression also needs a Java 11+ JDK on `PATH`, in
+`JAVA_HOME`, or in `VACCINE_TEST_JAVA_HOME`; it is skipped if no JDK is available.
 
 ## Integration tests
 
