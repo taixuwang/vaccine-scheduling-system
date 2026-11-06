@@ -1,11 +1,15 @@
 """Offline checks for safety and correctness of the integration-test helpers."""
 
 import argparse
+import io
 import os
+import threading
 import unittest
+from contextlib import redirect_stdout
 from unittest.mock import Mock, patch
 
 import aiohttp
+import requests
 
 from test_concurrency import configure_concurrency, post_concurrently
 from test_config import (
@@ -18,7 +22,14 @@ from test_config import (
     reservation_details,
     schedule_sections,
 )
-from test_throughput import LoadFixture, LoadTestResult, reserve_and_cancel, setup_load_test_data
+from test_throughput import (
+    LoadFixture,
+    LoadTestResult,
+    ReservationCleanupError,
+    reserve_and_cancel,
+    run_load_test,
+    setup_load_test_data,
+)
 
 
 class Response:
@@ -43,7 +54,9 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(settings.base_url, "https://example.test/proxy")
         self.assertEqual(settings.timeout, 2)
         for target in ("example.test", "file:///tmp/test", "https://user:pass@example.test",
-                       "http://example.test/?key=1"):
+                       "http://example.test/?key=1", "http://:80", "http://example.test:abc",
+                       "http://example.test:65536", "http://example.test\n.evil.test",
+                       "http://example.test\\@evil.test"):
             with self.subTest(target=target), self.assertRaises(ValueError):
                 Settings(target)
         for value in (0, -1, "nan", "inf"):
@@ -71,7 +84,7 @@ class ClientTests(unittest.TestCase):
             session_type.return_value.close.assert_called_once_with()
 
     def test_rejections_do_not_accept_server_errors(self):
-        require_rejection(Response(400, {"message": "invalid"}), "bad request")
+        require_rejection(Response(400, {"status": 400, "message": "invalid"}), "bad request")
         with self.assertRaises(AssertionError):
             require_rejection(Response(500, {"message": "server error"}), "bad request")
         with self.assertRaises(AssertionError):
@@ -80,6 +93,9 @@ class ClientTests(unittest.TestCase):
             require_rejection(Response(404, {"message": "endpoint not found"}), "bad request")
         with self.assertRaises(AssertionError):
             require_rejection(Response(401, {"message": "unauthorized"}), "invalid input", {400, 422})
+        for body in ({"message": "invalid"}, {"status": 200, "message": "invalid"}):
+            with self.subTest(body=body), self.assertRaises(AssertionError):
+                require_rejection(Response(400, body), "bad request")
 
     def test_error_diagnostics_do_not_print_response_data(self):
         response = Response(400, {"message": "login failed", "data": "private-token"})
@@ -133,8 +149,71 @@ class LoadTestHarnessTests(unittest.TestCase):
         reserve_and_cancel(client, fixture, 0)
         client.cancel.assert_called_once_with("token", "42")
         client.cancel.return_value = Response(400, {"status": 400, "message": "failed"})
-        with self.assertRaisesRegex(RuntimeError, "42"):
+        with self.assertRaisesRegex(ReservationCleanupError, "42"):
             reserve_and_cancel(client, fixture, 0)
+
+    def test_unknown_reservation_outcome_stops_write_workload(self):
+        client = Mock()
+        fixture = LoadFixture("2030-01-01", "vax", ["patient"], ["token"])
+        client.reserve.side_effect = requests.Timeout("request timed out")
+        with self.assertRaises(ReservationCleanupError):
+            reserve_and_cancel(client, fixture, 0)
+        client.cancel.assert_not_called()
+
+        client.reserve.side_effect = None
+        for response in (Response(200, {"status": 200, "data": "malformed"}),
+                         Response(500, {"status": 500, "message": "server error"}),
+                         Response(400, {"status": 400, "message": "unexpected"})):
+            with self.subTest(status=response.status_code), \
+                    self.assertRaises(ReservationCleanupError):
+                client.reserve.return_value = response
+                reserve_and_cancel(client, fixture, 0)
+        client.cancel.assert_not_called()
+
+        rejection = Response(400, {"status": 400, "message": "not enough doses"})
+        client.reserve.return_value = rejection
+        self.assertIs(reserve_and_cancel(client, fixture, 0), rejection)
+
+    def test_workers_wait_for_initialization_and_stop_on_cleanup_error(self):
+        second_initializing = threading.Event()
+        finish_initialization = threading.Event()
+        lock = threading.Lock()
+        initializations = []
+        attempts = []
+        outcomes = []
+
+        def new_client(_settings):
+            with lock:
+                initializations.append(1)
+                is_second = len(initializations) == 2
+            if is_second:
+                second_initializing.set()
+                if not finish_initialization.wait(5):
+                    raise RuntimeError("test timed out waiting for initialization")
+            return Mock()
+
+        def operation(_client, index):
+            attempts.append(index)
+            raise ReservationCleanupError("reservation may still be active")
+
+        def run():
+            outcomes.append(run_load_test("test", Settings("http://example.test"),
+                                          operation, 2, 1))
+
+        with patch("test_throughput.ApiClient", side_effect=new_client), \
+                redirect_stdout(io.StringIO()):
+            runner = threading.Thread(target=run)
+            runner.start()
+            try:
+                self.assertTrue(second_initializing.wait(5))
+                self.assertEqual(attempts, [])
+            finally:
+                finish_initialization.set()
+                runner.join(5)
+            self.assertFalse(runner.is_alive())
+
+        self.assertEqual(sorted(attempts), [0, 1])
+        self.assertEqual(outcomes, [False])
 
     def test_load_setup_uses_the_same_explicit_target(self):
         settings = Settings("http://example.test:8081", 2)

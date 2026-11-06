@@ -12,6 +12,7 @@ from test_config import (
     IntegrationTestCase,
     empty_future_date,
     positive_int,
+    require_rejection,
     require_status,
     reservation_details,
     run_module_cli,
@@ -143,12 +144,14 @@ class ConcurrencyTests(IntegrationTestCase):
                                       request[2]["json"]["vaccine"]))
                 except AssertionError as exc:
                     problems.append(str(exc))
-            elif 400 <= result.status_code < 500 and isinstance(result.body, dict):
-                message = str(result.body.get("message", "")).lower()
-                if "not enough" not in message and "no caregiver" not in message:
-                    problems.append(f"unexpected rejection: {message}")
             else:
-                problems.append(f"unexpected HTTP {result.status_code} or malformed response")
+                try:
+                    body = require_rejection(result, "concurrent reservation", {400, 409, 422})
+                    message = str(body.get("message", "")).lower()
+                    if "not enough" not in message and "no caregiver" not in message:
+                        problems.append(f"unexpected rejection: {message}")
+                except AssertionError as exc:
+                    problems.append(str(exc))
 
         print(f"  concurrency round {run + 1}: {len(successes)}/{len(results)} reservations "
               f"in {elapsed:.2f}s", flush=True)

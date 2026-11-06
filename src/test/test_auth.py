@@ -4,8 +4,6 @@ Direct invocation targets localhost unless --target is provided. Discovery with
 unittest skips these tests unless VACCINE_TEST_BASE_URL is set.
 """
 
-import unittest
-
 from test_config import (
     IntegrationTestCase,
     PASSWORD,
@@ -35,10 +33,11 @@ class AuthenticationTests(IntegrationTestCase):
 
     def test_weak_passwords_are_rejected(self):
         passwords = ("Ab1!", "abcdefg1!", "Abcdefg1", "Abcdefg!")
-        for index, password in enumerate(passwords):
-            with self.subTest(password_case=index):
-                response = self.client.create("patient", self.name(f"weak{index}"), password)
-                require_rejection(response, "register with a weak password")
+        for role in ("patient", "caregiver"):
+            for index, password in enumerate(passwords):
+                with self.subTest(role=role, password_case=index):
+                    response = self.client.create(role, self.name(f"weak{index}"), password)
+                    require_rejection(response, f"register {role} with a weak password")
 
     def test_missing_and_invalid_tokens_are_rejected(self):
         require_rejection(self.client.appointments(None), "request without a token", {400, 401, 403})

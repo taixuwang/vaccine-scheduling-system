@@ -76,47 +76,69 @@ class LoadTestResult:
         return bool(success) and not self.transport_errors and not unexpected
 
 
+class ReservationCleanupError(RuntimeError):
+    """A reservation may remain active; stop issuing writes from this worker."""
+
+
 def run_load_test(name, settings, operation, num_threads, duration, allow_rejections=False):
     print(f"\n  [{name}] threads={num_threads}, duration={duration:g}s", flush=True)
     result = LoadTestResult()
-    start_event = threading.Event()
+    started = [0.0]
     deadline = [0.0]
 
+    def start_workload():
+        # The barrier action runs only after every worker has initialized its client.
+        started[0] = time.monotonic()
+        deadline[0] = started[0] + duration
+
+    start_barrier = threading.Barrier(num_threads + 1, action=start_workload)
+
     def worker(index):
+        client = None
         try:
             client = ApiClient(settings)
         except Exception as exc:
             result.record(0, error=f"worker setup: {type(exc).__name__}: {exc}")
-            return
         try:
-            start_event.wait()
+            try:
+                start_barrier.wait()
+            except threading.BrokenBarrierError:
+                return
+            if client is None:
+                return
             while time.monotonic() < deadline[0]:
                 started = time.monotonic()
                 try:
                     response = operation(client, index)
                     result.record((time.monotonic() - started) * 1000, response.status_code)
+                except ReservationCleanupError as exc:
+                    result.record((time.monotonic() - started) * 1000,
+                                  error=f"{type(exc).__name__}: {exc}")
+                    break
                 except Exception as exc:
                     result.record((time.monotonic() - started) * 1000,
                                   error=f"{type(exc).__name__}: {exc}")
         finally:
-            client.close()
+            if client is not None:
+                try:
+                    client.close()
+                except Exception as exc:
+                    result.record(0, error=f"worker cleanup: {type(exc).__name__}: {exc}")
 
     threads = [threading.Thread(target=worker, args=(index,)) for index in range(num_threads)]
     try:
         for thread in threads:
             thread.start()
     except RuntimeError:
-        start_event.set()
+        start_barrier.abort()
         for thread in threads:
             if thread.ident is not None:
                 thread.join()
         raise
-    started = time.monotonic()
-    deadline[0] = started + duration
-    start_event.set()
+    start_barrier.wait()
     for thread in threads:
         thread.join()
-    result.report(time.monotonic() - started)
+    result.report(time.monotonic() - started[0])
     return result.passed(allow_rejections=allow_rejections)
 
 
@@ -162,20 +184,37 @@ def setup_load_test_data(settings, num_threads):
 
 def reserve_and_cancel(client, fixture, index):
     token = fixture.patient_tokens[index]
-    response = client.reserve(token, fixture.day, fixture.vaccine)
+    try:
+        response = client.reserve(token, fixture.day, fixture.vaccine)
+    except requests.RequestException as exc:
+        raise ReservationCleanupError(
+            "reservation outcome is unknown after a request error"
+        ) from exc
     if response.status_code != 200:
-        body = require_rejection(response, "reserve during load test")
+        try:
+            body = require_rejection(response, "reserve during load test", {400, 409, 422})
+        except AssertionError as exc:
+            raise ReservationCleanupError(
+                "reservation returned an unexpected response; its outcome may be unknown"
+            ) from exc
         message = str(body.get("message", "")).lower()
         if "not enough" not in message and "no caregiver" not in message:
-            raise AssertionError(f"unexpected reservation rejection: {message}")
+            raise ReservationCleanupError(f"unexpected reservation rejection: {message}")
         return response
-    appointment_id, _ = reservation_details(response)
+    try:
+        appointment_id, _ = reservation_details(response)
+    except AssertionError as exc:
+        raise ReservationCleanupError(
+            "successful reservation response did not contain a usable appointment ID"
+        ) from exc
     try:
         cancelled = client.cancel(token, appointment_id)
         require_status(cancelled, 200, f"cancel load-test appointment {appointment_id}")
         return cancelled
     except (requests.RequestException, AssertionError) as exc:
-        raise RuntimeError(f"appointment {appointment_id} could not be cancelled: {exc}") from exc
+        raise ReservationCleanupError(
+            f"appointment {appointment_id} could not be cancelled: {exc}"
+        ) from exc
 
 
 def main(argv=None):

@@ -45,10 +45,19 @@ def positive_float(value):
 
 class Settings:
     def __init__(self, base_url, timeout=DEFAULT_TIMEOUT):
-        parsed = urlsplit(base_url)
-        if (parsed.scheme not in ("http", "https") or not parsed.netloc
-                or parsed.query or parsed.fragment or parsed.username is not None):
-            raise ValueError("target must be an HTTP(S) URL without credentials, query, or fragment")
+        error = "target must be an HTTP(S) URL without credentials, query, or fragment"
+        if not isinstance(base_url, str) or any(char.isspace() for char in base_url):
+            raise ValueError(error)
+        try:
+            parsed = urlsplit(base_url)
+            # Accessing port also validates its syntax and range.
+            parsed.port
+        except ValueError as exc:
+            raise ValueError(error) from exc
+        if (parsed.scheme not in ("http", "https") or not parsed.hostname
+                or "\\" in parsed.netloc or parsed.query or parsed.fragment
+                or parsed.username is not None):
+            raise ValueError(error)
         self.base_url = base_url.rstrip("/")
         self.timeout = positive_float(timeout)
 
@@ -195,7 +204,10 @@ def require_rejection(response, action, expected=None):
         raise AssertionError(
             f"{action}: expected a validation or authorization rejection, got HTTP {response.status_code}"
         )
-    return response_body(response)
+    body = response_body(response)
+    if body.get("status") != response.status_code:
+        raise AssertionError(f"{action}: response status does not match HTTP {response.status_code}")
+    return body
 
 
 def reservation_details(response):

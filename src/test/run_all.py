@@ -17,7 +17,7 @@ def main(argv=None):
     add_target_arguments(parser)
     test_concurrency.add_concurrency_arguments(parser)
     parser.add_argument("--skip-concurrency", action="store_true",
-                        help="run authentication and reservation integration tests only")
+                        help="skip concurrency tests (offline and other integration tests still run)")
     args = parser.parse_args(argv)
     try:
         settings = configure_environment(args.target, args.timeout)

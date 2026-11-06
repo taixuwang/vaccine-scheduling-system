@@ -14,7 +14,7 @@ class ReservationTests(IntegrationTestCase):
     def setUp(self):
         super().setUp()
         self.caregiver_name, self.caregiver_token = self.create_user("caregiver", "res_cg")
-        _, self.patient_token = self.create_user("patient", "res_patient")
+        self.patient_name, self.patient_token = self.create_user("patient", "res_patient")
         self.day = empty_future_date(self.client, self.patient_token)
         self.vaccine = self.name("res_vaccine")
         require_status(self.client.upload_availability(self.caregiver_token, self.day),
@@ -33,11 +33,23 @@ class ReservationTests(IntegrationTestCase):
         self.assertEqual(caregiver, self.caregiver_name)
         appointments = require_status(self.client.appointments(self.patient_token), 200,
                                       "show appointments")["data"]
-        self.assertTrue(any(item.split(" ", 1)[0] == appointment_id for item in appointments))
+        self.assertIn(f"{appointment_id} {self.vaccine} {self.day} {self.caregiver_name}",
+                      appointments)
+        caregiver_appointments = require_status(
+            self.client.appointments(self.caregiver_token), 200, "show caregiver appointments"
+        )["data"]
+        self.assertIn(f"{appointment_id} {self.vaccine} {self.day} {self.patient_name}",
+                      caregiver_appointments)
+        caregivers, vaccines = schedule_sections(self.client.search(self.patient_token, self.day))
+        self.assertNotIn(self.caregiver_name, caregivers)
+        self.assertEqual(vaccines.get(self.vaccine), 1)
 
         _, other_token = self.create_user("patient", "other_patient")
         require_rejection(self.client.cancel(other_token, appointment_id),
                           "cancel another patient's appointment")
+        caregivers, vaccines = schedule_sections(self.client.search(self.patient_token, self.day))
+        self.assertNotIn(self.caregiver_name, caregivers)
+        self.assertEqual(vaccines.get(self.vaccine), 1)
         self.cancel_tracked(appointment_id)
         require_rejection(self.client.cancel(self.patient_token, appointment_id),
                           "cancel an already-cancelled appointment", {400, 404, 409})
@@ -61,6 +73,8 @@ class ReservationTests(IntegrationTestCase):
                           "reserve as caregiver")
         require_rejection(self.client.add_doses(self.patient_token, self.vaccine, 1),
                           "add doses as patient")
+        require_rejection(self.client.upload_availability(self.patient_token, self.day),
+                          "upload availability as patient")
 
     def test_missing_doses_and_caregiver_are_rejected(self):
         require_rejection(self.client.reserve(self.patient_token, self.day, self.name("missing_vax")),
@@ -75,11 +89,33 @@ class ReservationTests(IntegrationTestCase):
     def test_invalid_date_does_not_consume_inventory(self):
         require_rejection(self.client.reserve(self.patient_token, "not-a-date", self.vaccine),
                           "reserve with an invalid date")
+        caregivers, vaccines = schedule_sections(self.client.search(self.patient_token, self.day))
+        self.assertIn(self.caregiver_name, caregivers)
+        self.assertEqual(vaccines.get(self.vaccine), 2)
         appointment_id, caregiver = self.track_reservation(
             self.client.reserve(self.patient_token, self.day, self.vaccine), self.patient_token
         )
         self.assertEqual(caregiver, self.caregiver_name)
         self.cancel_tracked(appointment_id)
+
+    def test_only_assigned_caregiver_can_cancel(self):
+        appointment_id, caregiver = self.track_reservation(
+            self.client.reserve(self.patient_token, self.day, self.vaccine), self.patient_token
+        )
+        self.assertEqual(caregiver, self.caregiver_name)
+        _, other_caregiver = self.create_user("caregiver", "other_cg")
+        require_rejection(self.client.cancel(other_caregiver, appointment_id),
+                          "cancel another caregiver's appointment")
+        caregivers, vaccines = schedule_sections(self.client.search(self.patient_token, self.day))
+        self.assertNotIn(self.caregiver_name, caregivers)
+        self.assertEqual(vaccines.get(self.vaccine), 1)
+
+        require_status(self.client.cancel(self.caregiver_token, appointment_id), 200,
+                       "cancel assigned caregiver's appointment")
+        del self.active_appointments[appointment_id]
+        caregivers, vaccines = schedule_sections(self.client.search(self.patient_token, self.day))
+        self.assertIn(self.caregiver_name, caregivers)
+        self.assertEqual(vaccines.get(self.vaccine), 2)
 
     def test_negative_dose_count_is_rejected(self):
         require_rejection(self.client.add_doses(self.caregiver_token, self.vaccine, -1),
