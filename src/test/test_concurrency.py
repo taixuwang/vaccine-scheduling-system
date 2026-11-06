@@ -98,27 +98,80 @@ def latency_summary(results):
     }
 
 
-async def post_concurrently(settings, requests_to_send):
-    """Return every response, including transport errors, without dropping tasks."""
-    timeout = aiohttp.ClientTimeout(total=settings.timeout)
-    connector = aiohttp.TCPConnector(limit=0)
-    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
-        async def send(token, path, payload):
-            start = time.monotonic()
-            try:
-                async with session.post(
-                    settings.base_url + path, headers={"Authorization": f"Bearer {token}"},
-                    **payload,
-                ) as response:
-                    try:
-                        body = await response.json(content_type=None)
-                    except (ValueError, aiohttp.ContentTypeError):
-                        body = None
-                    return Attempt(token, response.status, body, time.monotonic() - start)
-            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                return Attempt(token, 0, None, time.monotonic() - start, type(exc).__name__)
+def problem_summary(problems):
+    """Bound diagnostics while retaining the count of every error category."""
+    counts = Counter(problem if problem.startswith("transport error:") else
+                     problem.split(":", 1)[0] for problem in problems)
+    categories = "; ".join(f"{kind}={count}" for kind, count in counts.items())
+    examples = "; ".join(dict.fromkeys(problems[:5]))
+    return f"{len(problems)} errors ({categories}); examples: {examples}"
 
-        return await asyncio.gather(*(send(*request) for request in requests_to_send))
+
+async def post_concurrently(settings, requests_to_send, session=None):
+    """Return every response, including transport errors, without dropping tasks."""
+    if session is None:
+        timeout = aiohttp.ClientTimeout(total=settings.timeout)
+        connector = aiohttp.TCPConnector(limit=0)
+        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as owned_session:
+            return await post_concurrently(settings, requests_to_send, owned_session)
+
+    async def send(token, path, payload):
+        start = time.monotonic()
+        try:
+            async with session.post(
+                settings.base_url + path, headers={"Authorization": f"Bearer {token}"},
+                **payload,
+            ) as response:
+                try:
+                    body = await response.json(content_type=None)
+                except (ValueError, aiohttp.ContentTypeError):
+                    body = None
+                return Attempt(token, response.status, body, time.monotonic() - start)
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            return Attempt(token, 0, None, time.monotonic() - start, type(exc).__name__)
+
+    return await asyncio.gather(*(send(*request) for request in requests_to_send))
+
+
+class ConcurrentClient:
+    """Keep connections and their event loop alive across all reservation rounds.
+
+    Each batch still sends every request concurrently, without retries. Keeping
+    the pool alive avoids thousands of unnecessary TCP handshakes and closed
+    connections accumulating in the host's Docker forwarding layer.
+    """
+
+    def __init__(self, settings):
+        self.settings = settings
+        self.loop = None
+        self.session = None
+
+    async def _open(self):
+        self.session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=self.settings.timeout),
+            connector=aiohttp.TCPConnector(limit=0, keepalive_timeout=120),
+        )
+
+    def __enter__(self):
+        self.loop = asyncio.new_event_loop()
+        try:
+            self.loop.run_until_complete(self._open())
+        except BaseException:
+            self.loop.close()
+            raise
+        return self
+
+    def post(self, requests_to_send):
+        return self.loop.run_until_complete(
+            post_concurrently(self.settings, requests_to_send, self.session)
+        )
+
+    def __exit__(self, *args):
+        try:
+            self.loop.run_until_complete(self.session.close())
+            self.loop.run_until_complete(asyncio.sleep(0))
+        finally:
+            self.loop.close()
 
 
 class ConcurrencyTests(IntegrationTestCase):
@@ -141,13 +194,41 @@ class ConcurrencyTests(IntegrationTestCase):
             caregivers_by_name = [self.create_user("caregiver", f"con_c{index}")
                                   for index in range(caregivers)]
             used_days = set()
-            for run in range(runs):
-                with self.subTest(run=run + 1):
-                    self._run_round(run, doses, tokens, caregivers_by_name, used_days,
-                                    writer, latency_file)
+            with ConcurrentClient(self.settings) as transport:
+                for run in range(runs):
+                    try:
+                        with self.subTest(run=run + 1):
+                            self._run_round(run, doses, tokens, caregivers_by_name, used_days,
+                                            writer, latency_file, transport=transport)
+                    finally:
+                        # A failed round must release its known reservations
+                        # before another round starts. Keep failed cancellations
+                        # tracked for the final cleanup as well.
+                        with self.subTest(run=run + 1, phase="cleanup"):
+                            self._cleanup_round(transport)
+
+    def _cleanup_round(self, transport):
+        appointments = list(self.active_appointments.items())
+        if not appointments:
+            return
+        results = transport.post([
+            (token, "/api/reservation/cancel", {"params": {"appointmentId": appointment_id}})
+            for appointment_id, token in appointments
+        ])
+        problems = []
+        for (appointment_id, _), result in zip(appointments, results):
+            try:
+                if result.error:
+                    raise AssertionError(f"transport error: {result.error}")
+                require_status(result, 200, "round cleanup")
+                del self.active_appointments[appointment_id]
+            except AssertionError as exc:
+                problems.append(str(exc))
+        if problems:
+            self.fail(problem_summary(problems))
 
     def _run_round(self, run, dose_count, tokens, caregivers_by_name, used_days,
-                   writer, latency_file):
+                   writer, latency_file, transport=None):
         first_patient = tokens[0]
         for _ in range(30):
             day = empty_future_date(self.client, first_patient)
@@ -177,7 +258,8 @@ class ConcurrencyTests(IntegrationTestCase):
             for token in tokens
         ]
         started = time.monotonic()
-        results = asyncio.run(post_concurrently(self.settings, requests_to_send))
+        results = (transport.post(requests_to_send) if transport else
+                   asyncio.run(post_concurrently(self.settings, requests_to_send)))
         elapsed = time.monotonic() - started
         successes = []
         problems = []
@@ -215,7 +297,8 @@ class ConcurrencyTests(IntegrationTestCase):
             print("  reservation latency (ms; all attempts, including errors): "
                   + " ".join(f"{name}={value:.1f}" for name, value in latency.items()),
                   flush=True)
-        self.assertFalse(problems, "; ".join(problems[:5]))
+        if problems:
+            self.fail(problem_summary(problems))
         self.assertEqual(len(successes), dose_count, "available doses should be fully booked")
         ids = [appointment_id for appointment_id, _, _, _ in successes]
         assigned = [caregiver for _, caregiver, _, _ in successes]
@@ -229,7 +312,8 @@ class ConcurrencyTests(IntegrationTestCase):
             (token, "/api/reservation/cancel", {"params": {"appointmentId": appointment_id}})
             for appointment_id, _, token, _ in successes
         ]
-        cancelled = asyncio.run(post_concurrently(self.settings, cancel_requests))
+        cancelled = (transport.post(cancel_requests) if transport else
+                     asyncio.run(post_concurrently(self.settings, cancel_requests)))
         cancellation_errors = []
         for (appointment_id, _, _, _), result in zip(successes, cancelled):
             try:
@@ -239,7 +323,8 @@ class ConcurrencyTests(IntegrationTestCase):
                 del self.active_appointments[appointment_id]
             except AssertionError as exc:
                 cancellation_errors.append(str(exc))
-        self.assertFalse(cancellation_errors, "; ".join(cancellation_errors[:5]))
+        if cancellation_errors:
+            self.fail(problem_summary(cancellation_errors))
 
         available, visible_doses = schedule_sections(self.client.search(first_patient, day))
         self.assertEqual(available, caregiver_names)

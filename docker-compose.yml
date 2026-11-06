@@ -1,17 +1,4 @@
 services:
-  # --- Local Docker PostgreSQL (added for local testing) ---
-  postgres:
-    image: postgres:15
-    command: postgres -c max_connections=300 -c synchronous_commit=off
-    environment:
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: scheduler_db
-    ports:
-      - "5432:5432"
-    volumes:
-      - ./src/main/resources/aurora/aurora-create.sql:/docker-entrypoint-initdb.d/init.sql
-    restart: always
-
   redis:
     image: redis:6
     ports:
@@ -21,63 +8,42 @@ services:
   app1:
     build: .
     environment:
-      # --- Aurora config (commented out for local Docker PostgreSQL) ---
-      # - Endpoint=${DB_ENDPOINT:-your-aurora-endpoint}
-      # - Database=${DB_NAME:-scheduler_db}
-      # - Username=${DB_USER:-postgres}
-      # - Password=${DB_PASSWORD:-password}
-      # --- Local Docker PostgreSQL ---
-      - Endpoint=postgres
-      - Database=scheduler_db
-      - Username=postgres
-      - Password=password
+      - Endpoint=${Endpoint:?Set Endpoint in .env}
+      - Database=${Database:?Set Database in .env}
+      - Username=${Username:?Set Username in .env}
+      - Password=${Password:?Set Password in .env}
       - RedisEndpoint=redis
       - JwtSecret=${JWT_SECRET:-change_me_in_production}
       - SERVER_TOMCAT_THREADS_MAX=600
     depends_on:
-      - postgres
       - redis
     restart: on-failure
 
   app2:
     build: .
     environment:
-      # --- Aurora config (commented out for local Docker PostgreSQL) ---
-      # - Endpoint=${DB_ENDPOINT:-your-aurora-endpoint}
-      # - Database=${DB_NAME:-scheduler_db}
-      # - Username=${DB_USER:-postgres}
-      # - Password=${DB_PASSWORD:-password}
-      # --- Local Docker PostgreSQL ---
-      - Endpoint=postgres
-      - Database=scheduler_db
-      - Username=postgres
-      - Password=password
+      - Endpoint=${Endpoint:?Set Endpoint in .env}
+      - Database=${Database:?Set Database in .env}
+      - Username=${Username:?Set Username in .env}
+      - Password=${Password:?Set Password in .env}
       - RedisEndpoint=redis
       - JwtSecret=${JWT_SECRET:-change_me_in_production}
       - SERVER_TOMCAT_THREADS_MAX=600
     depends_on:
-      - postgres
       - redis
     restart: on-failure
 
   app3:
     build: .
     environment:
-      # --- Aurora config (commented out for local Docker PostgreSQL) ---
-      # - Endpoint=${DB_ENDPOINT:-your-aurora-endpoint}
-      # - Database=${DB_NAME:-scheduler_db}
-      # - Username=${DB_USER:-postgres}
-      # - Password=${DB_PASSWORD:-password}
-      # --- Local Docker PostgreSQL ---
-      - Endpoint=postgres
-      - Database=scheduler_db
-      - Username=postgres
-      - Password=password
+      - Endpoint=${Endpoint:?Set Endpoint in .env}
+      - Database=${Database:?Set Database in .env}
+      - Username=${Username:?Set Username in .env}
+      - Password=${Password:?Set Password in .env}
       - RedisEndpoint=redis
       - JwtSecret=${JWT_SECRET:-change_me_in_production}
       - SERVER_TOMCAT_THREADS_MAX=600
     depends_on:
-      - postgres
       - redis
     restart: on-failure
 

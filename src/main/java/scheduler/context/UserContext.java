@@ -6,6 +6,15 @@ import scheduler.model.Patient;
 public class UserContext {
     private static final ThreadLocal<Caregiver> currentCaregiver = new ThreadLocal<>();
     private static final ThreadLocal<Patient> currentPatient = new ThreadLocal<>();
+    private static final ThreadLocal<String> currentToken = new ThreadLocal<>();
+
+    public static void setToken(String token) {
+        currentToken.set(token);
+    }
+
+    public static String getToken() {
+        return currentToken.get();
+    }
 
     public static void setCaregiver(Caregiver caregiver) {
         currentCaregiver.set(caregiver);
@@ -26,5 +35,6 @@ public class UserContext {
     public static void clear() {
         currentCaregiver.remove();
         currentPatient.remove();
+        currentToken.remove();
     }
 }

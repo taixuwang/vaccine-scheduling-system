@@ -17,6 +17,7 @@ public class AuthInterceptor implements HandlerInterceptor {
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
+        UserContext.clear();
         String authHeader = request.getHeader("Authorization");
         if (authHeader != null && authHeader.startsWith("Bearer ")) {
             String token = authHeader.substring(7);
@@ -29,9 +30,11 @@ public class AuthInterceptor implements HandlerInterceptor {
                 if ("Patient".equals(role)) {
                     Patient p = new Patient.PatientBuilder(username, new byte[0], new byte[0]).build();
                     UserContext.setPatient(p);
+                    UserContext.setToken(token);
                 } else if ("Caregiver".equals(role)) {
                     Caregiver c = new Caregiver.CaregiverBuilder(username, new byte[0], new byte[0]).build();
                     UserContext.setCaregiver(c);
+                    UserContext.setToken(token);
                 }
             } catch (JWTVerificationException e) {
                 // Invalid token, do not set user context

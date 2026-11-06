@@ -15,7 +15,7 @@ import java.sql.SQLException;
 public class AuthService {
 
     private static boolean checkPassword(String password) {
-        if (password.length() < 8) {
+        if (password == null || password.length() < 8) {
             return false;
         }
         boolean hasUpper = false;
@@ -179,6 +179,7 @@ public class AuthService {
             throw new RuntimeException("Please login first");
         }
 
+        JwtUtil.revokeToken(UserContext.getToken());
         UserContext.clear();
         return "Successfully logged out";
     }

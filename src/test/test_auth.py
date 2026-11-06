@@ -4,6 +4,9 @@ Direct invocation targets localhost unless --target is provided. Discovery with
 unittest skips these tests unless VACCINE_TEST_BASE_URL is set.
 """
 
+import base64
+import json
+
 from test_config import (
     IntegrationTestCase,
     PASSWORD,
@@ -45,9 +48,36 @@ class AuthenticationTests(IntegrationTestCase):
                           "request with an invalid token", {400, 401, 403})
 
     def test_logout_invalidates_the_token(self):
-        _, token = self.create_user("patient", "logout_patient")
-        require_status(self.client.logout(token), 200, "logout")
-        require_rejection(self.client.appointments(token), "reuse a token after logout", {400, 401, 403})
+        for role in ("patient", "caregiver"):
+            with self.subTest(role=role):
+                _, token = self.create_user(role, f"logout_{role}")
+                require_status(self.client.logout(token), 200, f"logout {role}")
+                require_rejection(self.client.appointments(token),
+                                  f"reuse {role} token after logout", {400, 401, 403})
+
+    def test_login_sessions_have_distinct_ids_and_independent_logout(self):
+        for role in ("patient", "caregiver"):
+            with self.subTest(role=role):
+                username, first_token = self.create_user(role, f"sessions_{role}")
+                second_token = self.client.login(role, username)
+                self.assertNotEqual(first_token, second_token,
+                                    "consecutive logins must create distinct sessions")
+                # Check the session identifiers as well as the signed tokens:
+                # this catches collisions even if the requests cross a second.
+                session_ids = []
+                for token in (first_token, second_token):
+                    payload = token.split(".")[1]
+                    claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+                    self.assertTrue(claims.get("jti"), "login token must have a session ID")
+                    session_ids.append(claims["jti"])
+                self.assertNotEqual(*session_ids)
+
+                require_status(self.client.logout(first_token), 200, "logout first session")
+                require_rejection(self.client.appointments(first_token),
+                                  "reuse first session after logout", {400, 401, 403})
+                require_status(self.client.appointments(second_token), 200,
+                               "use second session after first session logs out")
+                require_status(self.client.logout(second_token), 200, "logout second session")
 
 
 if __name__ == "__main__":

@@ -121,7 +121,7 @@ public class ReservationService {
                 }
 
                 // 2. Select caregiver and remove availability in one statement
-                String getCaregiver = "WITH avail AS (SELECT Time, Username FROM Availabilities WHERE Time = ? ORDER BY Username LIMIT 1 FOR UPDATE SKIP LOCKED) DELETE FROM Availabilities a USING avail WHERE a.Time = avail.Time AND a.Username = avail.Username RETURNING a.Username";
+                String getCaregiver = "WITH avail AS (SELECT a.Time, a.Username FROM Availabilities a JOIN Caregivers c ON c.Username = a.Username WHERE a.Time = ? ORDER BY a.Username LIMIT 1 FOR UPDATE OF a, c SKIP LOCKED) DELETE FROM Availabilities a USING avail WHERE a.Time = avail.Time AND a.Username = avail.Username RETURNING a.Username";
                 String assignedCaregiver;
                 try (PreparedStatement caregiverStatement = con.prepareStatement(getCaregiver)) {
                     caregiverStatement.setDate(1, d);
@@ -161,10 +161,14 @@ public class ReservationService {
                     throw e;
                 }
             } catch (IllegalArgumentException e) {
+                try { con.rollback(); } catch (SQLException ignored) {}
                 throw new RuntimeException("Invalid date format");
             } catch (SQLException e) {
                 try { con.rollback(); } catch (SQLException ex) {}
                 throw new RuntimeException("Operation failed, please try again");
+            } catch (RuntimeException e) {
+                try { con.rollback(); } catch (SQLException ignored) {}
+                throw e;
             } finally {
                 try { con.setAutoCommit(true); } catch (SQLException ex) {}
                 cm.closeConnection();
@@ -235,7 +239,7 @@ public class ReservationService {
                     restoreStmt.executeUpdate();
                 }
                 
-                String addAvailability = "INSERT INTO Availabilities VALUES (?, ?)";
+                String addAvailability = "INSERT INTO Availabilities VALUES (?, ?) ON CONFLICT DO NOTHING";
                 try (PreparedStatement addStatement = con.prepareStatement(addAvailability)) {
                     addStatement.setDate(1, time);
                     addStatement.setString(2, caregiverName);
@@ -258,7 +262,11 @@ public class ReservationService {
                 throw e;
             }
         } catch (SQLException e) {
+            try { con.rollback(); } catch (SQLException ignored) {}
             throw new RuntimeException("Operation failed, please try again");
+        } catch (RuntimeException e) {
+            try { con.rollback(); } catch (SQLException ignored) {}
+            throw e;
         } finally {
             try { con.setAutoCommit(true); } catch (SQLException ex) {}
             cm.closeConnection();

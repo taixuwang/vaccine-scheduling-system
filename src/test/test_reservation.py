@@ -117,11 +117,28 @@ class ReservationTests(IntegrationTestCase):
         self.assertIn(self.caregiver_name, caregivers)
         self.assertEqual(vaccines.get(self.vaccine), 2)
 
-    def test_negative_dose_count_is_rejected(self):
-        require_rejection(self.client.add_doses(self.caregiver_token, self.vaccine, -1),
-                          "add a negative dose count", {400, 422})
+    def test_non_positive_dose_count_is_rejected(self):
+        for count in (-1, 0):
+            with self.subTest(count=count):
+                require_rejection(self.client.add_doses(self.caregiver_token, self.vaccine, count),
+                                  "add a non-positive dose count", {400, 422})
         _, vaccines = schedule_sections(self.client.search(self.patient_token, self.day))
         self.assertEqual(vaccines.get(self.vaccine), 2)
+
+    def test_reuploading_an_available_date_is_idempotent(self):
+        for _ in range(2):
+            require_status(self.client.upload_availability(self.caregiver_token, self.day),
+                           200, "reupload an available date")
+        caregivers, vaccines = schedule_sections(self.client.search(self.patient_token, self.day))
+        self.assertEqual(caregivers, {self.caregiver_name})
+        self.assertEqual(vaccines.get(self.vaccine), 2)
+        appointment_id, caregiver = self.track_reservation(
+            self.client.reserve(self.patient_token, self.day, self.vaccine), self.patient_token
+        )
+        self.assertEqual(caregiver, self.caregiver_name)
+        require_rejection(self.client.reserve(self.patient_token, self.day, self.vaccine),
+                          "reserve the same caregiver twice after repeated uploads")
+        self.cancel_tracked(appointment_id)
 
     def test_reuploading_a_booked_date_does_not_prevent_cancellation(self):
         appointment_id, caregiver = self.track_reservation(

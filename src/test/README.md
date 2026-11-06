@@ -86,9 +86,16 @@ type, if any). Cancellation requests are not included. Use `--latency-file` or
 exclusively and an existing file will not be overwritten. The path is printed
 at the start and each round is flushed before its assertions.
 
-The logout, negative inventory, and booked-date re-upload regressions document
-known backend defects and may fail until those defects are fixed. They are not
-marked as expected failures: a failure remains visible in the test result.
+The suite includes regressions for token revocation, independent login sessions,
+non-positive inventory updates, and repeated availability uploads. These are
+regular assertions and are expected to pass.
+
+The multi-round test keeps one asynchronous connection pool and event loop for
+reservation and cancellation requests across rounds. Each round still submits
+all patients concurrently, without retries. This avoids thousands of repeated
+TCP handshakes through the host's Docker port forwarder. Failed rounds report
+error counts and a few examples, then clean up known reservations before the
+next round.
 
 ## Load test
 

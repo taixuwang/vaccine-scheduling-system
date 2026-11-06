@@ -13,7 +13,9 @@ public class RedisManager {
         poolConfig.setMaxTotal(400); // Enough to avoid Jedis pool contention without wasting memory
         poolConfig.setMaxIdle(300);  // Keep most connections warm for reuse
         poolConfig.setMinIdle(50);  // Minimum idle connections
-        poolConfig.setTestOnBorrow(false); // Skip validation for speed (Redis is local, stable)
+        // Redis may restart while applications keep their pool. Discard dead
+        // sockets before returning them to authentication or inventory callers.
+        poolConfig.setTestOnBorrow(true);
         
         // Connect to Redis. Read endpoint from environment variable if available.
         String redisHost = System.getenv("RedisEndpoint");

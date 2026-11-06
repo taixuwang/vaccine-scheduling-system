@@ -1,6 +1,7 @@
 """Offline checks for safety and correctness of the integration-test helpers."""
 
 import argparse
+import asyncio
 import csv
 import io
 import os
@@ -17,10 +18,12 @@ import test_concurrency
 
 from test_concurrency import (
     Attempt,
+    ConcurrentClient,
     add_concurrency_arguments,
     configure_concurrency,
     latency_summary,
     post_concurrently,
+    problem_summary,
 )
 from test_config import (
     ApiClient,
@@ -93,6 +96,15 @@ class ConfigurationTests(unittest.TestCase):
                           "p99": 100.0, "max": 100.0})
         with self.assertRaises(ValueError):
             latency_summary([])
+
+    def test_error_summary_counts_repeated_errors_without_dumping_them(self):
+        errors = ["transport error: ServerDisconnectedError"] * 367
+        errors.append("transport error: TimeoutError")
+        summary = problem_summary(errors)
+        self.assertIn("368 errors", summary)
+        self.assertIn("ServerDisconnectedError=367", summary)
+        self.assertIn("TimeoutError=1", summary)
+        self.assertLess(len(summary), 250)
 
 
 class ClientTests(unittest.TestCase):
@@ -303,7 +315,104 @@ class ConcurrentTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[0][1]["headers"]["Authorization"], "Bearer token-a")
 
 
+class ConcurrentClientLifecycleTests(unittest.TestCase):
+    def test_batches_share_session_and_loop_and_close_after_failure(self):
+        sessions = []
+        loops = []
+        calls = []
+
+        class Session:
+            def __init__(self, **kwargs):
+                self.closed = False
+                self.connector = kwargs["connector"]
+                sessions.append(self)
+                loops.append(asyncio.get_running_loop())
+
+            def post(self, url, **kwargs):
+                calls.append((self, asyncio.get_running_loop(), url))
+                if url.endswith("/offline"):
+                    raise aiohttp.ServerDisconnectedError()
+                return AsyncResponse()
+
+            async def close(self):
+                self.closed = True
+                loops.append(asyncio.get_running_loop())
+
+        class AsyncResponse:
+            status = 200
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def json(self, **kwargs):
+                # Every request in a batch can run before any response completes.
+                await asyncio.sleep(0)
+                return {"status": 200}
+
+        with patch("test_concurrency.aiohttp.ClientSession", Session), \
+                patch("test_concurrency.aiohttp.TCPConnector") as connector:
+            with self.assertRaisesRegex(RuntimeError, "scenario failed"):
+                with ConcurrentClient(Settings("http://example.test")) as transport:
+                    for _ in range(2):
+                        results = transport.post([("token", "/ok", {})] * 4
+                                                 + [("token", "/offline", {})])
+                        self.assertEqual([result.status_code for result in results],
+                                         [200, 200, 200, 200, 0])
+                        self.assertEqual(results[-1].error, "ServerDisconnectedError")
+                    self.assertEqual(len(calls), 10, "failed POSTs must not be retried")
+                    raise RuntimeError("scenario failed")
+            connector.assert_called_once_with(limit=0, keepalive_timeout=120)
+
+        self.assertEqual(len(sessions), 1)
+        self.assertTrue(sessions[0].closed)
+        self.assertTrue(all(session is sessions[0] and loop is loops[0]
+                            for session, loop, _ in calls))
+        self.assertIs(loops[0], loops[1])
+        self.assertTrue(loops[0].is_closed())
+
+
 class ConcurrencyScenarioTests(unittest.TestCase):
+    def test_failed_round_is_cleaned_before_next_round(self):
+        scenario = test_concurrency.ConcurrencyTests(
+            "test_reservations_do_not_oversell_and_cancellations_restore_capacity")
+        scenario.setUp = Mock()
+        scenario.client = Mock()
+        scenario.settings = Settings("http://example.test")
+        scenario.active_appointments = {}
+        scenario.create_user = Mock(return_value=("user", "token"))
+        events = []
+
+        def run_round(index, *args, **kwargs):
+            events.append(f"round{index}")
+            self.assertEqual(scenario.active_appointments, {})
+            if index == 0:
+                scenario.active_appointments["42"] = "token"
+                scenario.fail("simulated round failure")
+
+        def cleanup(requests_to_send):
+            events.append("cleanup")
+            self.assertEqual(requests_to_send[0][2]["params"], {"appointmentId": "42"})
+            return [Attempt("token", 200, {"status": 200}, 0.001)]
+
+        scenario._run_round = Mock(side_effect=run_round)
+        with tempfile.TemporaryDirectory() as temp_dir, \
+                patch.dict(os.environ, {"VACCINE_TEST_PATIENTS": "2", "VACCINE_TEST_DOSES": "1",
+                                       "VACCINE_TEST_CAREGIVERS": "1", "VACCINE_TEST_RUNS": "2",
+                                       "VACCINE_TEST_LATENCY_FILE": str(Path(temp_dir) / "latency.csv")}), \
+                patch("test_concurrency.ConcurrentClient") as transport_type, \
+                redirect_stdout(io.StringIO()):
+            transport_type.return_value.__enter__.return_value.post.side_effect = cleanup
+            result = unittest.TestResult()
+            scenario.run(result)
+
+        self.assertEqual(events, ["round0", "cleanup", "round1"])
+        self.assertEqual(len(result.failures), 1)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(scenario.active_appointments, {})
+
     def test_two_rounds_reuse_accounts_and_record_every_reservation(self):
         scenario = test_concurrency.ConcurrencyTests(
             "test_reservations_do_not_oversell_and_cancellations_restore_capacity")
@@ -319,7 +428,7 @@ class ConcurrencyScenarioTests(unittest.TestCase):
         scenario.client.add_doses.return_value = success_response
         recorded_requests = []
 
-        async def post(_settings, requests_to_send):
+        async def post(_settings, requests_to_send, session=None):
             if requests_to_send[0][1].endswith("/cancel"):
                 return [Attempt(token, 200, {"status": 200}, 0.002)
                         for token, _, _ in requests_to_send]

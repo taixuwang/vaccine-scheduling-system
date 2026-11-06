@@ -8,7 +8,7 @@ The system is designed for high availability, high concurrency, and scalability:
 - **Application Framework**: Spring Boot 2.7
 - **Database**: PostgreSQL (handling transactions and concurrency control via `FOR UPDATE SKIP LOCKED`)
 - **Caching**: Redis (for rapid pre-flight checks and atomic dose counting)
-- **Authentication**: Stateless JWT tokens (solving multi-node session issues)
+- **Authentication**: JWT tokens with shared Redis revocation for multi-node logout
 - **Connection Pooling**: HikariCP
 - **Load Balancing**: Nginx
 
@@ -52,8 +52,8 @@ python3 -m unittest discover -s src/test -v
 python3 src/test/run_all.py --target http://localhost
 ```
 
-The suite includes regression tests for known backend defects, so it may report
-failures until those defects are fixed. See [the test guide](src/test/README.md)
+The suite includes regression tests for authentication, inventory validation,
+and reservation recovery. See [the test guide](src/test/README.md)
 for configuration, individual suites, and fixture details.
 
 ### Running Load Tests
@@ -77,6 +77,6 @@ docker-compose down
 
 ## System Highlights
 
-- **Stateless Authentication**: Removed local in-memory session management in favor of JWT tokens, enabling seamless request routing across multiple nodes.
+- **Authentication**: JWT tokens support routing across multiple nodes; logout records a token digest in shared Redis until expiry. Authentication rejects tokens when the revocation store is unavailable. Redis uses append-only persistence and a named volume so logout records survive container restarts.
 - **Concurrency Control**: Implemented robust concurrency handling using a combination of Redis atomic decrements (fast path) and PostgreSQL `FOR UPDATE SKIP LOCKED` (source of truth) to prevent overselling of vaccine doses under heavy load.
 - **Resource Management**: Extensively refactored database interactions to use `try-with-resources`, ensuring no connection or statement leaks occur during high traffic or error conditions.

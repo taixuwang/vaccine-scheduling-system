@@ -9,6 +9,7 @@ import java.sql.Connection;
 import java.sql.Date;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
+import java.sql.ResultSet;
 
 @Service
 public class VaccineService {
@@ -22,18 +23,48 @@ public class VaccineService {
         Connection con = cm.createConnection();
         try {
             Date d = Date.valueOf(date);
-            String addAvailability = "INSERT INTO Availabilities VALUES (?, ?)";
+            con.setAutoCommit(false);
+            String username = UserContext.getCaregiver().getUsername();
+            // Serialize availability changes with reservation assignment for
+            // this caregiver, including concurrent re-uploads during booking.
+            try (PreparedStatement lock = con.prepareStatement(
+                    "SELECT Username FROM Caregivers WHERE Username = ? FOR UPDATE")) {
+                lock.setString(1, username);
+                try (ResultSet ignored = lock.executeQuery()) {
+                    if (!ignored.next()) {
+                        throw new RuntimeException("Caregiver does not exist");
+                    }
+                }
+            }
+            try (PreparedStatement booked = con.prepareStatement(
+                    "SELECT 1 FROM Reservations WHERE Caregiver_name = ? AND Time = ?")) {
+                booked.setString(1, username);
+                booked.setDate(2, d);
+                try (ResultSet result = booked.executeQuery()) {
+                    if (result.next()) {
+                        throw new RuntimeException("Caregiver already has an appointment on this date");
+                    }
+                }
+            }
+            String addAvailability = "INSERT INTO Availabilities VALUES (?, ?) ON CONFLICT DO NOTHING";
             try (PreparedStatement statement = con.prepareStatement(addAvailability)) {
                 statement.setDate(1, d);
-                statement.setString(2, UserContext.getCaregiver().getUsername());
+                statement.setString(2, username);
                 statement.executeUpdate();
             }
+            con.commit();
             return "Availability uploaded!";
         } catch (IllegalArgumentException e) {
+            try { con.rollback(); } catch (SQLException ignored) {}
             throw new RuntimeException("Invalid date format");
         } catch (SQLException e) {
+            try { con.rollback(); } catch (SQLException ignored) {}
             throw new RuntimeException("Operation failed, please try again");
+        } catch (RuntimeException e) {
+            try { con.rollback(); } catch (SQLException ignored) {}
+            throw e;
         } finally {
+            try { con.setAutoCommit(true); } catch (SQLException ignored) {}
             cm.closeConnection();
         }
     }
@@ -41,6 +72,12 @@ public class VaccineService {
     public String addDoses(String vaccineName, int doses) {
         if (UserContext.getCaregiver() == null) {
             throw new RuntimeException("Please login as a caregiver");
+        }
+        if (doses <= 0) {
+            throw new IllegalArgumentException("Dose count must be positive");
+        }
+        if (vaccineName == null || vaccineName.trim().isEmpty()) {
+            throw new IllegalArgumentException("Vaccine name is required");
         }
 
         ConnectionManager cm = new ConnectionManager();
