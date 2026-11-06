@@ -37,7 +37,7 @@ The API will be available at `http://localhost`.
 ### Running Tests
 
 The tests create accounts, availability, and vaccine inventory. Run integration
-and load tests only against a disposable instance: the application has no API
+tests only against a disposable instance: the application has no API
 for deleting these fixtures. The test scripts do not truncate the database or
 flush Redis.
 
@@ -49,24 +49,16 @@ python3 -m pip install -r requirements.txt
 python3 -m unittest discover -s src/test -v
 
 # Run integration tests against a running, disposable cluster
-python3 src/test/run_all.py --target http://localhost
+python3 src/test/test_api_auth.py --target http://localhost
+python3 src/test/test_api_reservation.py --target http://localhost
+
+# Run the concurrency test separately
+python3 src/test/test_concurrency.py --target http://localhost
 ```
 
 The suite includes regression tests for authentication, inventory validation,
 and reservation recovery. See [the test guide](src/test/README.md)
 for configuration, individual suites, and fixture details.
-
-### Running Load Tests
-
-A throughput and latency load test script is available to benchmark the performance of the system under sustained load. This test measures the requests per second (req/s), latency distributions, and error rates across critical endpoints.
-
-```bash
-# Run the load test against a disposable cluster (20 threads, 10 seconds per workload)
-python3 src/test/test_throughput.py
-
-# Run with custom parameters and target
-python3 src/test/test_throughput.py --target http://localhost --threads 50 --duration 15
-```
 
 ### Stopping the Cluster
 

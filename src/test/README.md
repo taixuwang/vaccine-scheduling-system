@@ -9,22 +9,17 @@ venv/bin/python -m pip install -r requirements.txt
 ```
 
 Use `venv/bin/python` in place of `python3` in the following commands if using
-that virtual environment. The password-hash regression also requires a Java 11+
-JDK; it is skipped when a suitable compiler is unavailable. Set
-`VACCINE_TEST_JAVA_HOME` (or `JAVA_HOME`) if the JDK is not on `PATH`.
+that virtual environment.
 
 ## Test inventory
 
 | File | Purpose | Needs a running API? |
 | --- | --- | --- |
-| `test_harness.py` | Configuration, HTTP helpers, response parsing, concurrency transport, and load-test bookkeeping. Uses mocks. | No |
-| `test_password_hash.py` and `java/scheduler/util/PasswordHashProbe.java` | Compile the Java password utility and check a deterministic PBKDF2 vector, including a hash ending in zero. | No |
-| `test_auth.py` | Registration, login, password policy, token validation, and logout. | Yes |
-| `test_reservation.py` | Reservation and cancellation, access control, invalid input, availability, and inventory recovery. | Yes |
+| `test_user_context.py` | Checks Java request-context thread isolation and cleanup; requires a JDK 11 or newer. | No |
+| `test_api_auth.py` | Registration, login, token validation, and logout. | Yes |
+| `test_api_reservation.py` | Reservation and cancellation, access control, invalid input, availability, and inventory recovery. | Yes |
 | `test_concurrency.py` | Concurrent bookings, capacity and assignment invariants, cancellation, and rebooking. | Yes |
-| `test_throughput.py` | Opt-in throughput and latency workloads; this is a script, not a `unittest` test case. | Yes |
-| `test_config.py` | Shared API client, settings, fixtures, and assertions; not a test suite. | No |
-| `run_all.py` | Runs offline, authentication, reservation, and concurrency tests; excludes the load test. | Yes |
+| `test_config.py` | Shared API client, settings, fixtures, and assertions; required by the concurrency and API tests, not a test suite. | No |
 
 ## Offline checks
 
@@ -33,7 +28,8 @@ python3 -m unittest discover -s src/test -v
 ```
 
 Discovery skips integration test classes unless `VACCINE_TEST_BASE_URL` is set.
-The password test reports a separate skip if a suitable JDK is unavailable.
+The context test skips if a JDK 11 or newer is unavailable; set `JAVA_HOME`
+when the JDK is not on `PATH`.
 Check the skip messages as well as the final result when interpreting a run.
 
 ## Integration tests and isolation
@@ -47,10 +43,8 @@ registration to be enabled. The tests choose a future date with no visible
 caregivers, but cannot prevent another process from changing it concurrently.
 
 ```sh
-python3 src/test/run_all.py --target http://localhost
-python3 src/test/run_all.py --target http://localhost --skip-concurrency
-python3 src/test/test_auth.py --target http://localhost
-python3 src/test/test_reservation.py --target http://localhost
+python3 src/test/test_api_auth.py --target http://localhost
+python3 src/test/test_api_reservation.py --target http://localhost
 python3 src/test/test_concurrency.py --target http://localhost --patients 1000 --doses 100 --caregivers 100 --runs 10
 ```
 
@@ -96,17 +90,3 @@ all patients concurrently, without retries. This avoids thousands of repeated
 TCP handshakes through the host's Docker port forwarder. Failed rounds report
 error counts and a few examples, then clean up known reservations before the
 next round.
-
-## Load test
-
-```sh
-python3 src/test/test_throughput.py --target http://localhost --threads 20 --duration 10
-```
-
-The script runs login, schedule search, appointment listing, and complete
-reserve-and-cancel workloads, each for the requested duration. It reports
-operations per second, latency percentiles, HTTP statuses, and request errors.
-Temporary capacity rejections in the write workload are counted separately.
-The script checks for unexpected errors and successful operations, but sets no
-performance threshold. Setup and all workloads use the same target and timeout.
-For HTTPS targets, use Python linked against a supported OpenSSL version.

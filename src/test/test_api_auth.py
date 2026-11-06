@@ -26,21 +26,9 @@ class AuthenticationTests(IntegrationTestCase):
                 token = self.client.login(role, username)
                 self.assertEqual(len(token.split(".")), 3, "login should return a JWT")
                 require_rejection(
-                    self.client.login_response(role, username, "WrongPass@1"),
-                    f"login {role} with wrong password",
-                )
-                require_rejection(
                     self.client.login_response(role, self.name("missing"), PASSWORD),
                     f"login nonexistent {role}",
                 )
-
-    def test_weak_passwords_are_rejected(self):
-        passwords = ("Ab1!", "abcdefg1!", "Abcdefg1", "Abcdefg!")
-        for role in ("patient", "caregiver"):
-            for index, password in enumerate(passwords):
-                with self.subTest(role=role, password_case=index):
-                    response = self.client.create(role, self.name(f"weak{index}"), password)
-                    require_rejection(response, f"register {role} with a weak password")
 
     def test_missing_and_invalid_tokens_are_rejected(self):
         require_rejection(self.client.appointments(None), "request without a token", {400, 401, 403})

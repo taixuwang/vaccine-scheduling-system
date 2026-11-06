@@ -80,7 +80,7 @@ class Attempt:
 def latency_summary(results):
     """Summarize all attempts, including failed requests, in milliseconds.
 
-    Percentiles use the nearest-rank method, consistent with the load test.
+    Percentiles use the nearest-rank method.
     """
     values = sorted(result.elapsed * 1000 for result in results)
     if not values:

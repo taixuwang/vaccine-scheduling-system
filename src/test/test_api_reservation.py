@@ -125,6 +125,26 @@ class ReservationTests(IntegrationTestCase):
         _, vaccines = schedule_sections(self.client.search(self.patient_token, self.day))
         self.assertEqual(vaccines.get(self.vaccine), 2)
 
+    def test_adding_doses_accumulates_and_empty_name_is_rejected(self):
+        require_status(self.client.add_doses(self.caregiver_token, self.vaccine, 3),
+                       200, "add more doses")
+        require_rejection(self.client.add_doses(self.caregiver_token, " ", 1),
+                          "add doses without vaccine name", {400})
+        _, vaccines = schedule_sections(self.client.search(self.patient_token, self.day))
+        self.assertEqual(vaccines.get(self.vaccine), 5)
+
+    def test_appointments_are_visible_only_to_participants(self):
+        appointment_id, _ = self.track_reservation(
+            self.client.reserve(self.patient_token, self.day, self.vaccine), self.patient_token
+        )
+        _, other_patient = self.create_user("patient", "unrelated_patient")
+        _, other_caregiver = self.create_user("caregiver", "unrelated_caregiver")
+        for token in (other_patient, other_caregiver):
+            data = require_status(self.client.appointments(token), 200,
+                                  "show unrelated user's appointments")["data"]
+            self.assertFalse(any(item.split(" ", 1)[0] == appointment_id for item in data))
+        self.cancel_tracked(appointment_id)
+
     def test_reuploading_an_available_date_is_idempotent(self):
         for _ in range(2):
             require_status(self.client.upload_availability(self.caregiver_token, self.day),
@@ -145,11 +165,8 @@ class ReservationTests(IntegrationTestCase):
             self.client.reserve(self.patient_token, self.day, self.vaccine), self.patient_token
         )
         self.assertEqual(caregiver, self.caregiver_name)
-        response = self.client.upload_availability(self.caregiver_token, self.day)
-        if response.status_code == 200:
-            require_status(response, 200, "reupload a booked date")
-        else:
-            require_rejection(response, "reupload a booked date", {400, 409, 422})
+        require_rejection(self.client.upload_availability(self.caregiver_token, self.day),
+                          "reupload a booked date", {400})
         self.cancel_tracked(appointment_id)
 
 
