@@ -1,17 +1,27 @@
 """Offline checks for safety and correctness of the integration-test helpers."""
 
 import argparse
+import csv
 import io
 import os
+import tempfile
 import threading
 import unittest
 from contextlib import redirect_stdout
-from unittest.mock import Mock, patch
+from pathlib import Path
+from unittest.mock import AsyncMock, Mock, patch
 
 import aiohttp
 import requests
+import test_concurrency
 
-from test_concurrency import configure_concurrency, post_concurrently
+from test_concurrency import (
+    Attempt,
+    add_concurrency_arguments,
+    configure_concurrency,
+    latency_summary,
+    post_concurrently,
+)
 from test_config import (
     ApiClient,
     BASE_URL_ENV,
@@ -67,6 +77,22 @@ class ConfigurationTests(unittest.TestCase):
         options = argparse.Namespace(patients=1, caregivers=2, doses=3, runs=1)
         with self.assertRaises(ValueError):
             configure_concurrency(options)
+
+    def test_concurrency_defaults_match_the_contention_scenario(self):
+        with patch.dict(os.environ, {}, clear=True):
+            parser = argparse.ArgumentParser()
+            add_concurrency_arguments(parser)
+            args = parser.parse_args([])
+        self.assertEqual((args.patients, args.doses, args.caregivers, args.runs),
+                         (1000, 100, 100, 10))
+
+    def test_reservation_latency_summary_includes_failed_attempts(self):
+        results = [Attempt("", 200, {}, 0.01), Attempt("", 0, None, 0.10, "TimeoutError")]
+        self.assertEqual(latency_summary(results),
+                         {"avg": 55.0, "p50": 10.0, "p95": 100.0,
+                          "p99": 100.0, "max": 100.0})
+        with self.assertRaises(ValueError):
+            latency_summary([])
 
 
 class ClientTests(unittest.TestCase):
@@ -275,6 +301,86 @@ class ConcurrentTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(results[1].error, "ClientConnectionError")
         self.assertEqual(calls[0][0], "https://target.example/ok")
         self.assertEqual(calls[0][1]["headers"]["Authorization"], "Bearer token-a")
+
+
+class ConcurrencyScenarioTests(unittest.TestCase):
+    def test_two_rounds_reuse_accounts_and_record_every_reservation(self):
+        scenario = test_concurrency.ConcurrencyTests(
+            "test_reservations_do_not_oversell_and_cancellations_restore_capacity")
+        scenario.client = Mock()
+        scenario.settings = Settings("http://example.test")
+        scenario.active_appointments = {}
+        scenario.create_user = Mock(side_effect=lambda role, name: (name, f"secret-{name}"))
+        scenario.name = lambda name: name
+        scenario.track_reservation = Mock(return_value=("99", "con_c0"))
+        scenario.cancel_tracked = Mock()
+        success_response = Response(200, {"status": 200})
+        scenario.client.upload_availability.return_value = success_response
+        scenario.client.add_doses.return_value = success_response
+        recorded_requests = []
+
+        async def post(_settings, requests_to_send):
+            if requests_to_send[0][1].endswith("/cancel"):
+                return [Attempt(token, 200, {"status": 200}, 0.002)
+                        for token, _, _ in requests_to_send]
+            recorded_requests.append(requests_to_send)
+            return [
+                Attempt(requests_to_send[0][0], 200,
+                        {"status": 200, "data": "Appointment ID 1, Caregiver username con_c0"},
+                        0.012),
+                Attempt(requests_to_send[1][0], 400,
+                        {"status": 400, "message": "not enough doses"}, 0.034),
+            ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            report_path = Path(temp_dir) / "latency.csv"
+            env = {"VACCINE_TEST_PATIENTS": "2", "VACCINE_TEST_DOSES": "1",
+                   "VACCINE_TEST_CAREGIVERS": "1", "VACCINE_TEST_RUNS": "2",
+                   "VACCINE_TEST_LATENCY_FILE": str(report_path)}
+            schedules = [({"con_c0"}, {f"con_vaccine{round_index}": 1})
+                         for round_index in range(2) for _ in range(2)]
+            with patch.dict(os.environ, env, clear=True), \
+                    patch("test_concurrency.empty_future_date", side_effect=["2030-01-01", "2030-01-02"]), \
+                    patch("test_concurrency.schedule_sections", side_effect=schedules), \
+                    patch("test_concurrency.post_concurrently", new_callable=AsyncMock, side_effect=post), \
+                    redirect_stdout(io.StringIO()):
+                scenario.test_reservations_do_not_oversell_and_cancellations_restore_capacity()
+
+            self.assertEqual(scenario.create_user.call_count, 3)
+            self.assertEqual([[request[0] for request in batch] for batch in recorded_requests],
+                             [["secret-con_p0", "secret-con_p1"]] * 2)
+            for round_index, batch in enumerate(recorded_requests):
+                self.assertEqual({request[2]["json"]["vaccine"] for request in batch},
+                                 {f"con_vaccine{round_index}"})
+            report = report_path.read_text(encoding="utf-8")
+            self.assertNotIn("secret-", report)
+            rows = list(csv.DictReader(io.StringIO(report)))
+            self.assertEqual([(row["round"], row["attempt"], row["elapsed_ms"],
+                               row["http_status"], row["error"]) for row in rows],
+                             [(str(round_number), str(attempt), latency, status, "")
+                              for round_number in (1, 2)
+                              for attempt, latency, status in ((1, "12.000", "200"),
+                                                                (2, "34.000", "400"))])
+
+    def test_transport_failure_is_saved_before_round_fails(self):
+        scenario = test_concurrency.ConcurrencyTests(
+            "test_reservations_do_not_oversell_and_cancellations_restore_capacity")
+        scenario.client = Mock()
+        scenario.settings = Settings("http://example.test")
+        scenario.active_appointments = {}
+        scenario.name = lambda name: name
+        scenario.client.upload_availability.return_value = Response(200, {"status": 200})
+        scenario.client.add_doses.return_value = Response(200, {"status": 200})
+        output = io.StringIO()
+        attempts = [Attempt("secret-patient", 0, None, 0.123, "TimeoutError")]
+        with patch("test_concurrency.empty_future_date", return_value="2030-01-01"), \
+                patch("test_concurrency.schedule_sections", return_value=({"cg"}, {"con_vaccine0": 1})), \
+                patch("test_concurrency.post_concurrently", new_callable=AsyncMock, return_value=attempts), \
+                redirect_stdout(io.StringIO()), self.assertRaisesRegex(AssertionError, "TimeoutError"):
+            scenario._run_round(0, 1, ["secret-patient"], [("cg", "secret-cg")],
+                                set(), csv.writer(output), output)
+        self.assertEqual(list(csv.reader(io.StringIO(output.getvalue()))),
+                         [["1", "1", "123.000", "0", "TimeoutError"]])
 
 
 if __name__ == "__main__":

@@ -51,7 +51,7 @@ python3 src/test/run_all.py --target http://localhost
 python3 src/test/run_all.py --target http://localhost --skip-concurrency
 python3 src/test/test_auth.py --target http://localhost
 python3 src/test/test_reservation.py --target http://localhost
-python3 src/test/test_concurrency.py --target http://localhost --patients 30 --doses 10 --caregivers 10 --runs 1
+python3 src/test/test_concurrency.py --target http://localhost --patients 1000 --doses 100 --caregivers 100 --runs 10
 ```
 
 These script entry points default to `VACCINE_TEST_BASE_URL`, or
@@ -63,13 +63,28 @@ the target to enable integration tests:
 VACCINE_TEST_BASE_URL=http://localhost python3 -m unittest discover -s src/test -v
 ```
 
-The concurrency defaults are 30 patients, 10 doses, 10 caregivers, and one
-run. `--patients` and `--caregivers` must each be at least `--doses`. The
+The concurrency defaults are 1,000 patients, 100 doses, 100 caregivers, and ten
+rounds. All patients compete for the same vaccine in each round. `--patients`
+and `--caregivers` must each be at least `--doses`. The
 corresponding environment variables are `VACCINE_TEST_PATIENTS`,
 `VACCINE_TEST_DOSES`, `VACCINE_TEST_CAREGIVERS`, and `VACCINE_TEST_RUNS`.
-Each round uses up to five vaccine names and checks API-visible capacity,
+Each round checks API-visible capacity,
 appointment IDs, caregiver assignments, cancellation, and rebooking. It does
-not compare PostgreSQL and Redis directly.
+not compare PostgreSQL and Redis directly. The default workload creates 1,100
+accounts and 1,000 doses across the ten rounds. Fixture setup can take a long
+time because registration and login use password hashing. A 1,000-connection
+burst can also hit client or server resource limits or the per-request timeout;
+timeouts may leave an appointment whose ID is unknown to the test.
+
+Each round prints the average, P50, P95, P99 and maximum reservation latency in
+milliseconds, including unsuccessful attempts. Individual reservation attempts
+are saved as CSV in the current directory under a unique
+`concurrency-latency-<random>.csv` name. The columns are `round`, `attempt`,
+`elapsed_ms`, `http_status` (0 for a transport error), and `error` (the error
+type, if any). Cancellation requests are not included. Use `--latency-file` or
+`VACCINE_TEST_LATENCY_FILE` to choose a different path; the file is created
+exclusively and an existing file will not be overwritten. The path is printed
+at the start and each round is flushed before its assertions.
 
 The logout, negative inventory, and booked-date re-upload regressions document
 known backend defects and may fail until those defects are fixed. They are not
